@@ -2,54 +2,130 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"time"
 
-	pb "cracker"
+	pb "hashcracker/cracker"
+
 	"google.golang.org/grpc"
 )
 
 const (
-	Port           = ":50051"
-	ChunkSize      = 1000  // Setiap task berisi 1000 percobaan password
-	TotalKeyspace  = 100000 // Demo: Keyspace 00000-99999 (Angka saja untuk demo cepat)
-	TaskTimeout    = 10 * time.Second // Waktu max worker mengerjakan tugas
+	Port          = ":50051"
+	ChunkSize     = 1000
+	TotalKeyspace = 100000
+	TaskTimeout   = 10 * time.Second
 )
 
-// Server struct
-type server struct {
+// ===== MASTER SERVER =====
+type MasterServer struct {
 	pb.UnimplementedCrackerServiceServer
-	mu           sync.Mutex
-	nextIndex    int64
-	targetHash   string
-	found        bool
-	password     string
-@@ -128,26 +126,25 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
-func main() {
-	// Setup Demo: Hash dari "88888" (MD5)
-	// Anda bisa ganti ini dengan hash lain
-	target := "21218cca77804d2ba1922c33e0151105" 
-	
-	lis, err := net.Listen("tcp", Port)
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+
+	tasks     []*pb.Task
+	taskIndex int
+	mu        sync.Mutex
+
+	found bool
+}
+
+// ===== HASH FUNCTION =====
+func hashMD5(input string) string {
+	h := md5.Sum([]byte(input))
+	return hex.EncodeToString(h[:])
+}
+
+// ===== gRPC: GET TASK =====
+func (s *MasterServer) GetTask(ctx context.Context, _ *pb.Empty) (*pb.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Jika password sudah ditemukan, hentikan distribusi
+	if s.found {
+		return &pb.Task{}, nil
 	}
 
-	s := grpc.NewServer()
-	srv := &server{
-		targetHash:  target,
-		activeTasks: make(map[string]taskLease),
+	if s.taskIndex >= len(s.tasks) {
+		return &pb.Task{}, nil
 	}
-	
-	pb.RegisterCrackerServiceServer(s, srv)
-	log.Printf("Master Hash Cracker running on port %s", Port)
-	log.Printf("Target Hash: %s", target)
-	log.Printf("Ready for Workers...")
-	
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
-	}
+
+	task := s.tasks[s.taskIndex]
+	s.taskIndex++
+
+	log.Printf("[MASTER] Mengirim Task ID %d\n", task.Id)
+	return task, nil
 }
+
+// ===== gRPC: REPORT RESULT =====
+func (s *MasterServer) ReportResult(ctx context.Context, r *pb.Result) (*pb.Ack, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if r.Found && !s.found {
+		s.found = true
+		log.Println("====================================")
+		log.Println(" PASSWORD DITEMUKAN :", r.Password)
+		log.Println(" TASK ID           :", r.TaskId)
+		log.Println("====================================")
+	}
+
+	return &pb.Ack{Ok: true}, nil
+}
+
+// ===== MAIN =====
+func main() {
+	log.Println("[MASTER] Starting Cerberus Master (gRPC)")
+
+	// ===== TARGET (DEMO) =====
+	targetPassword := "golang"
+	targetHash := hashMD5(targetPassword)
+
+	log.Println("[MASTER] Target Hash:", targetHash)
+
+	// ===== GENERATE TASKS =====
+	var tasks []*pb.Task
+	taskID := int32(1)
+
+	for i := 0; i < TotalKeyspace; i += ChunkSize {
+		end := i + ChunkSize
+		if end > TotalKeyspace {
+			end = TotalKeyspace
+		}
+
+		words := []string{}
+		for j := i; j < end; j++ {
+			words = append(words, fmt.Sprintf("%05d", j))
+		}
+
+		task := &pb.Task{
+			Id:    taskID,
+			Words: words,
+		}
+
+		tasks = append(tasks, task)
+		taskID++
+	}
+
+	log.Printf("[MASTER] Total Task: %d\n", len(tasks))
+
+	// ===== INIT SERVER =====
+	server := &MasterServer{
+		tasks: tasks,
+	}
+
+	lis, err := net.Listen("tcp", Port)
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterCrackerServiceServer(grpcServer, server)
+
+	log.Println("[MASTER] gRPC running on", Port)
+	grpcServer.Serve(lis)
+}
+
