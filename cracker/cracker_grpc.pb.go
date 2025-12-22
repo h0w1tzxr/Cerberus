@@ -19,16 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	CrackerService_GetTask_FullMethodName      = "/cracker.CrackerService/GetTask"
-	CrackerService_ReportResult_FullMethodName = "/cracker.CrackerService/ReportResult"
+	CrackerService_RegisterWorker_FullMethodName = "/cracker.CrackerService/RegisterWorker"
+	CrackerService_GetTask_FullMethodName        = "/cracker.CrackerService/GetTask"
+	CrackerService_ReportProgress_FullMethodName = "/cracker.CrackerService/ReportProgress"
+	CrackerService_ReportResult_FullMethodName   = "/cracker.CrackerService/ReportResult"
 )
 
 // CrackerServiceClient is the client API for CrackerService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CrackerServiceClient interface {
+	// Worker mendaftar dan melaporkan kemampuan
+	RegisterWorker(ctx context.Context, in *WorkerInfo, opts ...grpc.CallOption) (*Ack, error)
 	// Worker meminta chunk pekerjaan baru (Work Stealing / Pull-based)
 	GetTask(ctx context.Context, in *WorkerInfo, opts ...grpc.CallOption) (*TaskChunk, error)
+	// Worker melaporkan progres chunk
+	ReportProgress(ctx context.Context, in *ProgressUpdate, opts ...grpc.CallOption) (*Ack, error)
 	// Worker melaporkan hasil (Found/Not Found)
 	ReportResult(ctx context.Context, in *CrackResult, opts ...grpc.CallOption) (*Ack, error)
 }
@@ -41,9 +47,27 @@ func NewCrackerServiceClient(cc grpc.ClientConnInterface) CrackerServiceClient {
 	return &crackerServiceClient{cc}
 }
 
+func (c *crackerServiceClient) RegisterWorker(ctx context.Context, in *WorkerInfo, opts ...grpc.CallOption) (*Ack, error) {
+	out := new(Ack)
+	err := c.cc.Invoke(ctx, CrackerService_RegisterWorker_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *crackerServiceClient) GetTask(ctx context.Context, in *WorkerInfo, opts ...grpc.CallOption) (*TaskChunk, error) {
 	out := new(TaskChunk)
 	err := c.cc.Invoke(ctx, CrackerService_GetTask_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *crackerServiceClient) ReportProgress(ctx context.Context, in *ProgressUpdate, opts ...grpc.CallOption) (*Ack, error) {
+	out := new(Ack)
+	err := c.cc.Invoke(ctx, CrackerService_ReportProgress_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,8 +87,12 @@ func (c *crackerServiceClient) ReportResult(ctx context.Context, in *CrackResult
 // All implementations must embed UnimplementedCrackerServiceServer
 // for forward compatibility
 type CrackerServiceServer interface {
+	// Worker mendaftar dan melaporkan kemampuan
+	RegisterWorker(context.Context, *WorkerInfo) (*Ack, error)
 	// Worker meminta chunk pekerjaan baru (Work Stealing / Pull-based)
 	GetTask(context.Context, *WorkerInfo) (*TaskChunk, error)
+	// Worker melaporkan progres chunk
+	ReportProgress(context.Context, *ProgressUpdate) (*Ack, error)
 	// Worker melaporkan hasil (Found/Not Found)
 	ReportResult(context.Context, *CrackResult) (*Ack, error)
 	mustEmbedUnimplementedCrackerServiceServer()
@@ -74,8 +102,14 @@ type CrackerServiceServer interface {
 type UnimplementedCrackerServiceServer struct {
 }
 
+func (UnimplementedCrackerServiceServer) RegisterWorker(context.Context, *WorkerInfo) (*Ack, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterWorker not implemented")
+}
 func (UnimplementedCrackerServiceServer) GetTask(context.Context, *WorkerInfo) (*TaskChunk, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTask not implemented")
+}
+func (UnimplementedCrackerServiceServer) ReportProgress(context.Context, *ProgressUpdate) (*Ack, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportProgress not implemented")
 }
 func (UnimplementedCrackerServiceServer) ReportResult(context.Context, *CrackResult) (*Ack, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportResult not implemented")
@@ -93,6 +127,24 @@ func RegisterCrackerServiceServer(s grpc.ServiceRegistrar, srv CrackerServiceSer
 	s.RegisterService(&CrackerService_ServiceDesc, srv)
 }
 
+func _CrackerService_RegisterWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrackerServiceServer).RegisterWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrackerService_RegisterWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrackerServiceServer).RegisterWorker(ctx, req.(*WorkerInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CrackerService_GetTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(WorkerInfo)
 	if err := dec(in); err != nil {
@@ -107,6 +159,24 @@ func _CrackerService_GetTask_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CrackerServiceServer).GetTask(ctx, req.(*WorkerInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CrackerService_ReportProgress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProgressUpdate)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CrackerServiceServer).ReportProgress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CrackerService_ReportProgress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CrackerServiceServer).ReportProgress(ctx, req.(*ProgressUpdate))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -137,8 +207,16 @@ var CrackerService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*CrackerServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "RegisterWorker",
+			Handler:    _CrackerService_RegisterWorker_Handler,
+		},
+		{
 			MethodName: "GetTask",
 			Handler:    _CrackerService_GetTask_Handler,
+		},
+		{
+			MethodName: "ReportProgress",
+			Handler:    _CrackerService_ReportProgress_Handler,
 		},
 		{
 			MethodName: "ReportResult",
