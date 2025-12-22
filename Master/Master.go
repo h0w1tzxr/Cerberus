@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	pb "hashcracker/cracker"
+	pb "cracker"
 
 	"google.golang.org/grpc"
 )
