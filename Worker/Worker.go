@@ -82,6 +82,13 @@ func main() {
 			reportProgress(c, workerID, task.TaskId, processed, total)
 		}
 		found, passwd, errMsg := processTask(task, progressFn)
+		if errMsg != "" {
+			log.Printf("Chunk %d-%d failed: %s", task.StartIndex, task.EndIndex, errMsg)
+		} else if found {
+			log.Printf("Password found for chunk %d-%d: %s", task.StartIndex, task.EndIndex, passwd)
+		} else {
+			log.Printf("Chunk %d-%d exhausted with no match.", task.StartIndex, task.EndIndex)
+		}
 
 		// Lapor Hasil
 		err = reportResult(c, &pb.CrackResult{

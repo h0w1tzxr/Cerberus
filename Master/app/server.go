@@ -141,9 +141,13 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 				task.Completed = task.TotalKeyspace
 				task.DispatchReady = false
 				log.Printf("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
-			} else if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
-				task.Status = TaskStatusCompleted
-				task.DispatchReady = false
+			} else {
+				log.Printf("Chunk %s completed by %s with no match (%d-%d)", in.TaskId, in.WorkerId, lease.start, lease.end)
+				if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
+					task.Status = TaskStatusCompleted
+					task.DispatchReady = false
+					log.Printf("Task %s exhausted with no password found.", task.ID)
+				}
 			}
 			s.state.updateWorkerRateLocked(in.WorkerId, lease.end-lease.start, now.Sub(lease.assignedAt))
 			logTaskProgress(task, task.Completed)
