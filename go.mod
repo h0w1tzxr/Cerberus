@@ -1,6 +1,6 @@
 module cracker
 
-go 1.22
+go 1.25
 
 require (
 	google.golang.org/grpc v1.72.0
