@@ -69,6 +69,60 @@ go run ./Master task approve task-1
 go run ./Master task dispatch task-1
 ```
 
+## Testing Master dan Worker
+
+### Manual end-to-end test (recommended)
+
+Terminal 1 (Master):
+
+```bash
+go run ./Master
+```
+
+Terminal 2 (CLI add + dispatch):
+
+```bash
+go run ./Master task add --hash <hash> --mode md5 --keyspace 10000 --chunk 1000
+go run ./Master task review task-1
+go run ./Master task approve task-1
+go run ./Master task dispatch task-1
+```
+
+Terminal 3 (Worker):
+
+```bash
+go run ./Worker
+```
+
+Verifikasi:
+
+- Master log menampilkan assign chunk + progress bar.
+- Worker log menampilkan progress bar dan report result.
+- `go run ./Master task show task-1` menunjukkan progress bertambah dan status selesai.
+
+### Manual test dengan wordlist
+
+```bash
+go run ./Master task add --hash <hash> --mode sha256 --wordlist /path/to/wordlist.txt --chunk 1000
+go run ./Master task review task-2
+go run ./Master task approve task-2
+go run ./Master task dispatch task-2
+go run ./Worker
+```
+
+Catatan:
+
+- Pastikan path wordlist sama di Master dan Worker.
+- Jika worker gagal membaca wordlist, status akan menjadi `failed` dan perlu `retry`.
+
+### Menjalankan dari folder Master
+
+Jika kamu ada di folder `Master/`:
+
+```bash
+go run Master.go task list
+```
+
 ## Arsitektur dan Data Flow
 
 ### Komponen utama
@@ -305,6 +359,12 @@ worker-A  4      2025-01-01T10:00:00Z   2         healthy
 
 ```bash
 go test -bench . ./Common/wordlist
+```
+
+## Benchmark (Worker Hashing)
+
+```bash
+go test -bench . ./Worker
 ```
 
 ## Development Notes

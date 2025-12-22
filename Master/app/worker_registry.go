@@ -1,4 +1,4 @@
-package main
+package master
 
 import "time"
 
@@ -6,6 +6,7 @@ type workerInfo struct {
 	ID       string
 	CPUCores int32
 	LastSeen time.Time
+	AvgRate  float64
 }
 
 type workerStatus struct {

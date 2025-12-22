@@ -1,4 +1,4 @@
-package main
+package master
 
 import (
 	"container/heap"
@@ -12,10 +12,13 @@ import (
 )
 
 const (
-	DefaultChunkSize  int64 = 1000
-	DefaultKeyspace   int64 = 100000
-	DefaultMaxRetries       = 3
-	WorkerStaleAfter        = 30 * time.Second
+	DefaultChunkSize    int64 = 1000
+	DefaultKeyspace     int64 = 100000
+	DefaultMaxRetries         = 3
+	WorkerStaleAfter          = 30 * time.Second
+	TargetChunkDuration       = 8 * time.Second
+	MinChunkSize        int64 = 1
+	MaxChunkFactor            = 8
 )
 
 type taskLease struct {
@@ -31,6 +34,7 @@ type masterState struct {
 	tasks          map[string]*Task
 	queue          taskQueue
 	activeChunks   map[string]taskLease
+	chunkProgress  map[string]int64
 	workers        map[string]*workerInfo
 	dispatchPaused bool
 	nextTaskSeq    int64
@@ -40,11 +44,12 @@ type masterState struct {
 
 func newMasterState() *masterState {
 	state := &masterState{
-		tasks:        make(map[string]*Task),
-		queue:        make(taskQueue, 0),
-		activeChunks: make(map[string]taskLease),
-		workers:      make(map[string]*workerInfo),
-		wordlists:    wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes),
+		tasks:         make(map[string]*Task),
+		queue:         make(taskQueue, 0),
+		activeChunks:  make(map[string]taskLease),
+		chunkProgress: make(map[string]int64),
+		workers:       make(map[string]*workerInfo),
+		wordlists:     wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes),
 	}
 	heap.Init(&state.queue)
 	return state
@@ -124,6 +129,7 @@ func (s *masterState) assignChunkLocked(task *Task, start, end int64, workerID s
 		taskID:     task.ID,
 		assignedAt: now,
 	}
+	s.chunkProgress[chunkID] = 0
 
 	return &pb.TaskChunk{
 		TaskId:        chunkID,
@@ -142,6 +148,7 @@ func (s *masterState) reclaimExpiredLeasesLocked(now time.Time, timeout time.Dur
 			continue
 		}
 		delete(s.activeChunks, chunkID)
+		delete(s.chunkProgress, chunkID)
 		task := s.tasks[lease.taskID]
 		if task == nil || task.isTerminal() {
 			continue
@@ -154,7 +161,7 @@ func (s *masterState) reclaimExpiredLeasesLocked(now time.Time, timeout time.Dur
 	}
 }
 
-func (s *masterState) allocateRangeLocked(task *Task) (int64, int64, bool) {
+func (s *masterState) allocateRangeLocked(task *Task, chunkSize int64) (int64, int64, bool) {
 	if len(task.PendingRanges) > 0 {
 		pending := task.PendingRanges[0]
 		task.PendingRanges = task.PendingRanges[1:]
@@ -164,7 +171,10 @@ func (s *masterState) allocateRangeLocked(task *Task) (int64, int64, bool) {
 		return 0, 0, false
 	}
 	start := task.NextIndex
-	end := start + task.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = task.ChunkSize
+	}
+	end := start + chunkSize
 	if end > task.TotalKeyspace {
 		end = task.TotalKeyspace
 	}
@@ -230,6 +240,104 @@ func (s *masterState) updateWorkerLocked(workerID string, cpuCores int32, now ti
 	info.LastSeen = now
 }
 
+func (s *masterState) updateWorkerRateLocked(workerID string, processed int64, duration time.Duration) {
+	if processed <= 0 || duration <= 0 {
+		return
+	}
+	info := s.workers[workerID]
+	if info == nil {
+		return
+	}
+	rate := float64(processed) / duration.Seconds()
+	if info.AvgRate == 0 {
+		info.AvgRate = rate
+		return
+	}
+	const alpha = 0.3
+	info.AvgRate = alpha*rate + (1-alpha)*info.AvgRate
+}
+
+func (s *masterState) suggestChunkSizeLocked(task *Task, workerID string, cpuCores int32) int64 {
+	if task == nil {
+		return DefaultChunkSize
+	}
+	base := task.ChunkSize
+	if base <= 0 {
+		base = DefaultChunkSize
+	}
+	info := s.workers[workerID]
+	if info != nil && info.AvgRate > 0 {
+		desired := int64(info.AvgRate * TargetChunkDuration.Seconds())
+		return clampChunkSize(desired, base, cpuCores)
+	}
+	cores := int64(cpuCores)
+	if cores < 1 {
+		cores = 1
+	}
+	desired := base * cores
+	return clampChunkSize(desired, base, cpuCores)
+}
+
+func clampChunkSize(desired, base int64, cpuCores int32) int64 {
+	if desired <= 0 {
+		desired = base
+	}
+	cores := int64(cpuCores)
+	if cores < 1 {
+		cores = 1
+	}
+	minChunk := base / 2
+	if minChunk < MinChunkSize {
+		minChunk = MinChunkSize
+	}
+	maxChunk := base * cores * MaxChunkFactor
+	if maxChunk < minChunk {
+		maxChunk = minChunk
+	}
+	if desired < minChunk {
+		return minChunk
+	}
+	if desired > maxChunk {
+		return maxChunk
+	}
+	return desired
+}
+
+func (s *masterState) updateChunkProgressLocked(chunkID string, processed int64) (*Task, int64) {
+	lease, ok := s.activeChunks[chunkID]
+	if !ok {
+		return nil, 0
+	}
+	size := lease.end - lease.start
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > size {
+		processed = size
+	}
+	s.chunkProgress[chunkID] = processed
+	task := s.tasks[lease.taskID]
+	if task == nil {
+		return nil, 0
+	}
+	estimated := task.Completed + s.inflightProgressLocked(task.ID)
+	if estimated > task.TotalKeyspace {
+		estimated = task.TotalKeyspace
+	}
+	return task, estimated
+}
+
+func (s *masterState) inflightProgressLocked(taskID string) int64 {
+	var total int64
+	for chunkID, lease := range s.activeChunks {
+		if lease.taskID != taskID {
+			continue
+		}
+		total += s.chunkProgress[chunkID]
+	}
+	return total
+}
+
 func (s *masterState) workerStatusesLocked(now time.Time) []workerStatus {
 	statuses := make([]workerStatus, 0, len(s.workers))
 	for _, worker := range s.workers {
@@ -252,6 +360,7 @@ func (s *masterState) clearTaskLeasesLocked(taskID string) {
 	for chunkID, lease := range s.activeChunks {
 		if lease.taskID == taskID {
 			delete(s.activeChunks, chunkID)
+			delete(s.chunkProgress, chunkID)
 		}
 	}
 }

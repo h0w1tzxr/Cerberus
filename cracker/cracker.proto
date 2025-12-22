@@ -35,9 +35,15 @@ enum TaskAction {
 
 // Service definisi untuk komunikasi Master-Worker
 service CrackerService {
+  // Worker mendaftar dan melaporkan kemampuan
+  rpc RegisterWorker (WorkerInfo) returns (Ack);
+
   // Worker meminta chunk pekerjaan baru (Work Stealing / Pull-based)
   rpc GetTask (WorkerInfo) returns (TaskChunk);
   
+  // Worker melaporkan progres chunk
+  rpc ReportProgress (ProgressUpdate) returns (Ack);
+
   // Worker melaporkan hasil (Found/Not Found)
   rpc ReportResult (CrackResult) returns (Ack);
 }
@@ -76,6 +82,13 @@ message CrackResult {
   string found_password = 3;
   string worker_id = 4;
   string error_message = 5;
+}
+
+message ProgressUpdate {
+  string chunk_id = 1;
+  string worker_id = 2;
+  int64 processed = 3;
+  int64 total = 4;
 }
 
 message Ack {
