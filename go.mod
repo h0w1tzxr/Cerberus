@@ -3,7 +3,7 @@ module cracker
 go 1.22
 
 require (
-	google.golang.org/grpc v1.75.0
+	google.golang.org/grpc v1.67.0
 	google.golang.org/protobuf v1.35.2
 )
 
@@ -11,5 +11,5 @@ require (
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251213004720-97cd9d5aeac2 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20241118233622-e639e219e697 // indirect
 )
