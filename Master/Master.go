@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -128,4 +126,3 @@ func main() {
 	log.Println("[MASTER] gRPC running on", Port)
 	grpcServer.Serve(lis)
 }
-
