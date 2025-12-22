@@ -18,7 +18,7 @@ Proyek ini adalah demo sederhana **distributed hash cracking** berbasis gRPC den
 ### 1) Clone & Masuk ke Folder
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/h0w1tzxr/Cerberus.git
 cd Cerberus
 ```
 
@@ -33,7 +33,7 @@ go mod tidy
 Di **mesin Master**:
 
 ```bash
-go run ./Master
+go run Master/Master.go
 ```
 
 Output yang diharapkan (contoh):
@@ -63,7 +63,7 @@ const MasterAddress = "192.168.1.10:50051"
 ### 5) Jalankan Worker
 
 ```bash
-go run ./Worker
+go run Worker/Worker.go
 ```
 
 Output yang diharapkan (contoh):
