@@ -1,4 +1,4 @@
-module hashcracker
+module cracker
 
 go 1.22
 
