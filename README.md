@@ -4,7 +4,7 @@ Cerberus adalah demo distributed hash cracking berbasis gRPC dengan arsitektur M
 
 ## Ringkas
 
-- Manual workflow: review -> approve -> dispatch -> running -> completed/failed/canceled.
+- Streamlined workflow: add -> approved/dispatch-ready -> running -> completed/failed/canceled (manual review/approve/dispatch tetap tersedia bila dibutuhkan).
 - Admin CLI untuk kontrol task dan monitor worker.
 - Hash mode eksplisit: md5 dan sha256.
 - Wordlist streaming + indexing untuk file besar.
@@ -60,13 +60,10 @@ const MasterAddress = "<IP_MASTER>:50051"
 go run ./Worker
 ```
 
-### 5) Tambah task + jalankan workflow manual
+### 5) Tambah task (auto-approve + auto-dispatch)
 
 ```bash
 go run ./Master task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
-go run ./Master task review task-1
-go run ./Master task approve task-1
-go run ./Master task dispatch task-1
 ```
 
 ## Testing Master dan Worker
@@ -79,13 +76,10 @@ Terminal 1 (Master):
 go run ./Master
 ```
 
-Terminal 2 (CLI add + dispatch):
+Terminal 2 (CLI add):
 
 ```bash
 go run ./Master task add --hash <hash> --mode md5 --keyspace 10000 --chunk 1000
-go run ./Master task review task-1
-go run ./Master task approve task-1
-go run ./Master task dispatch task-1
 ```
 
 Terminal 3 (Worker):
@@ -104,9 +98,6 @@ Verifikasi:
 
 ```bash
 go run ./Master task add --hash <hash> --mode sha256 --wordlist /path/to/wordlist.txt --chunk 1000
-go run ./Master task review task-2
-go run ./Master task approve task-2
-go run ./Master task dispatch task-2
 go run ./Worker
 ```
 
@@ -139,19 +130,20 @@ go run Master.go task list
 
 1. Operator membuat task via Admin CLI.
 2. Master memvalidasi input (mode, wordlist, keyspace).
-3. Operator review + approve task.
-4. Operator dispatch task (task jadi dispatch-ready).
-5. Worker `GetTask` -> Master assign chunk.
-6. Worker brute force -> `ReportResult`.
-7. Master update progress dan status.
+3. Task otomatis approved + dispatch-ready (worker bisa langsung mengambil).
+4. Worker `GetTask` -> Master assign chunk.
+5. Worker brute force -> `ReportResult`.
+6. Master update progress dan status.
 
 ## Task Lifecycle (detail)
 
 Status yang dipakai:
 
+Default flow: task baru akan langsung `approved` + `dispatch_ready`, jadi worker bisa mengambil tanpa review/approve/dispatch manual.
+
 - `queued`: task baru dibuat.
 - `reviewed`: task sudah direview operator.
-- `approved`: task siap diproses (masih perlu `dispatch`).
+- `approved`: task siap diproses (default `task add` sudah auto `dispatch_ready`, manual flow bisa tetap butuh `dispatch`).
 - `running`: task sedang berjalan (ada chunk aktif).
 - `completed`: task selesai (password ditemukan atau keyspace habis).
 - `failed`: task gagal (contoh: wordlist error).
@@ -159,9 +151,9 @@ Status yang dipakai:
 
 Action dan efek:
 
-- **review**: `queued -> reviewed`.
-- **approve**: `reviewed -> approved`.
-- **dispatch**: set `dispatch_ready=true` agar worker bisa mengambil chunk.
+- **review**: `queued -> reviewed` (opsional).
+- **approve**: `reviewed -> approved` (opsional).
+- **dispatch**: set `dispatch_ready=true` agar worker bisa mengambil chunk (opsional).
 - **pause**: stop assign chunk baru untuk task ini.
 - **resume**: task boleh diproses lagi (jika dispatch-ready).
 - **cancel**: stop task, clear leases aktif, hasil late tidak dipakai.
@@ -225,12 +217,20 @@ Tambahan:
 - `--file -` juga membaca dari stdin.
 - Baris kosong diabaikan.
 
-### Task review/approve/dispatch
+### Task review/approve/dispatch (opsional)
 
 ```bash
 go run ./Master task review task-1 task-2
 go run ./Master task approve task-1 task-2
 go run ./Master task dispatch task-1 task-2
+```
+
+### Shortcut command (single dash)
+
+```bash
+go run ./Master -t -a --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
+go run ./Master -t -l
+go run ./Master -w -l
 ```
 
 ### Task pause/resume (per task)
@@ -296,7 +296,7 @@ go run ./Master dispatch resume
 
 Efek:
 
-- Saat paused, Worker akan menerima `dispatch paused` dan menunggu.
+- Saat paused, Worker akan masuk mode menunggu sampai dispatch dibuka lagi.
 
 ### Worker list (health + inflight)
 
@@ -329,7 +329,7 @@ worker-A  4      2025-01-01T10:00:00Z   2         healthy
 
 ## Reliability dan Failure Modes
 
-- Lease timeout 10s: chunk yang tidak dilaporkan akan di-requeue.
+- Lease timeout 30s: chunk tanpa progres akan di-requeue (progres akan memperpanjang lease).
 - Worker health `stale` jika last seen > 30s.
 - Task bisa `failed` jika:
   - Wordlist tidak ditemukan di Worker.
@@ -339,12 +339,12 @@ worker-A  4      2025-01-01T10:00:00Z   2         healthy
 
 ## Troubleshooting
 
-**Worker selalu "dispatch paused"**
-- Pastikan task sudah `review`, `approve`, dan `dispatch`.
+**Worker selalu "waiting"**
 - Pastikan global `dispatch` tidak paused.
+- Cek `task list` apakah ada task dengan `dispatch_ready=true` dan tidak `paused`.
 
 **Task tidak bergerak**
-- Cek `task show` dan `task list` apakah status masih `queued` atau `reviewed`.
+- Cek `task show` dan `task list` apakah status masih `queued`/`reviewed` (manual flow) atau `paused`.
 - Cek `dispatch_ready` dan `paused`.
 
 **Task gagal karena wordlist**

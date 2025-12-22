@@ -27,6 +27,7 @@ type taskLease struct {
 	workerID   string
 	taskID     string
 	assignedAt time.Time
+	expiresAt  time.Time
 }
 
 type masterState struct {
@@ -70,15 +71,21 @@ func (s *masterState) addTask(hash string, mode HashMode, wordlistPath string, c
 		Hash:          hash,
 		Mode:          mode,
 		WordlistPath:  wordlistPath,
-		Status:        TaskStatusQueued,
+		Status:        TaskStatusApproved,
 		Priority:      priority,
 		ChunkSize:     chunkSize,
 		TotalKeyspace: totalKeyspace,
 		MaxRetries:    maxRetries,
+		ReviewedBy:    "auto",
+		ApprovedBy:    "auto",
+		DispatchReady: true,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 	s.tasks[taskID] = task
+	if task.isDispatchable() {
+		s.enqueueTaskLocked(task)
+	}
 	return task
 }
 
@@ -128,6 +135,7 @@ func (s *masterState) assignChunkLocked(task *Task, start, end int64, workerID s
 		workerID:   workerID,
 		taskID:     task.ID,
 		assignedAt: now,
+		expiresAt:  now.Add(TaskTimeout),
 	}
 	s.chunkProgress[chunkID] = 0
 
@@ -144,7 +152,11 @@ func (s *masterState) assignChunkLocked(task *Task, start, end int64, workerID s
 
 func (s *masterState) reclaimExpiredLeasesLocked(now time.Time, timeout time.Duration) {
 	for chunkID, lease := range s.activeChunks {
-		if now.Sub(lease.assignedAt) <= timeout {
+		expiresAt := lease.expiresAt
+		if expiresAt.IsZero() {
+			expiresAt = lease.assignedAt.Add(timeout)
+		}
+		if now.Before(expiresAt) {
 			continue
 		}
 		delete(s.activeChunks, chunkID)
@@ -270,12 +282,7 @@ func (s *masterState) suggestChunkSizeLocked(task *Task, workerID string, cpuCor
 		desired := int64(info.AvgRate * TargetChunkDuration.Seconds())
 		return clampChunkSize(desired, base, cpuCores)
 	}
-	cores := int64(cpuCores)
-	if cores < 1 {
-		cores = 1
-	}
-	desired := base * cores
-	return clampChunkSize(desired, base, cpuCores)
+	return clampChunkSize(base, base, cpuCores)
 }
 
 func clampChunkSize(desired, base int64, cpuCores int32) int64 {
@@ -303,7 +310,7 @@ func clampChunkSize(desired, base int64, cpuCores int32) int64 {
 	return desired
 }
 
-func (s *masterState) updateChunkProgressLocked(chunkID string, processed int64) (*Task, int64) {
+func (s *masterState) updateChunkProgressLocked(chunkID string, processed int64, now time.Time) (*Task, int64) {
 	lease, ok := s.activeChunks[chunkID]
 	if !ok {
 		return nil, 0
@@ -316,6 +323,9 @@ func (s *masterState) updateChunkProgressLocked(chunkID string, processed int64)
 		processed = size
 	}
 	s.chunkProgress[chunkID] = processed
+	lease.expiresAt = now.Add(TaskTimeout)
+	s.activeChunks[chunkID] = lease
+	s.updateWorkerRateLocked(lease.workerID, processed, now.Sub(lease.assignedAt))
 	task := s.tasks[lease.taskID]
 	if task == nil {
 		return nil, 0

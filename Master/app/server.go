@@ -16,7 +16,7 @@ import (
 
 const (
 	Port        = ":50051"
-	TaskTimeout = 10 * time.Second
+	TaskTimeout = 30 * time.Second
 )
 
 type server struct {
@@ -96,8 +96,9 @@ func (s *server) ReportProgress(ctx context.Context, in *pb.ProgressUpdate) (*pb
 		return nil, status.Error(codes.InvalidArgument, "chunk id is required")
 	}
 	s.state.mu.Lock()
-	s.state.updateWorkerLocked(in.GetWorkerId(), 0, time.Now())
-	task, estimated := s.state.updateChunkProgressLocked(in.GetChunkId(), in.GetProcessed())
+	now := time.Now()
+	s.state.updateWorkerLocked(in.GetWorkerId(), 0, now)
+	task, estimated := s.state.updateChunkProgressLocked(in.GetChunkId(), in.GetProcessed(), now)
 	if task != nil {
 		logTaskProgress(task, estimated)
 	}

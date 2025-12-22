@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"cracker/Common/wordlist"
@@ -26,9 +27,13 @@ var wordlistCache = wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.Defa
 
 const (
 	standbyDelay        = 2 * time.Second
-	progressLogInterval = 1 * time.Second
-	progressReportEvery = int64(1000)
+	maxStandbyDelay     = 12 * time.Second
+	maxErrorDelay       = 15 * time.Second
+	progressLogInterval = 2 * time.Second
+	progressReportEvery = int64(200)
 	progressBarWidth    = 24
+	getTaskTimeout      = 4 * time.Second
+	statusTickInterval  = 200 * time.Millisecond
 )
 
 func main() {
@@ -38,8 +43,8 @@ func main() {
 	}
 	workerID := "worker-" + hostname // Atau gunakan UUID random
 
-	log.Printf("Worker Starting: %s", workerID)
 	cpuCores := int32(runtime.NumCPU())
+	log.Printf("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, MasterAddress)
 
 	// 1. Connect ke Master via gRPC
 	conn, err := grpc.Dial(MasterAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -51,30 +56,44 @@ func main() {
 
 	registerWorker(c, workerID, cpuCores)
 
+	status := newStatusSpinner(statusTickInterval)
+	idleDelay := standbyDelay
+	errorDelay := standbyDelay
+
 	// 2. Loop Work Stealing
 	for {
 		// Minta Task (Pull)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), getTaskTimeout)
 		task, err := c.GetTask(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
 		cancel()
 
 		if err != nil {
-			log.Printf("Error getting task (Master down?): %v. Retrying...", err)
-			time.Sleep(2 * time.Second)
+			if errorDelay == standbyDelay {
+				status.Stop()
+				log.Printf("Error getting task: %v", err)
+			}
+			status.Start("Master unavailable. Retrying...")
+			time.Sleep(errorDelay)
+			errorDelay = nextDelay(errorDelay, maxErrorDelay)
 			continue
 		}
+		errorDelay = standbyDelay
 
 		if task.DispatchPaused {
-			log.Println("Dispatch paused. Waiting...")
-			time.Sleep(standbyDelay)
+			status.Start("Waiting for dispatch...")
+			time.Sleep(idleDelay)
+			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
 
 		if task.NoMoreWork {
-			log.Println("No work available. Standing by...")
-			time.Sleep(standbyDelay)
+			status.Start("No work available. Standing by...")
+			time.Sleep(idleDelay)
+			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
+		status.Stop()
+		idleDelay = standbyDelay
 
 		// Proses Cracking
 		log.Printf("Processing chunk: %d - %d", task.StartIndex, task.EndIndex)
@@ -306,6 +325,17 @@ func formatDuration(duration time.Duration) string {
 	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }
 
+func nextDelay(current, max time.Duration) time.Duration {
+	if current <= 0 {
+		return max
+	}
+	next := current * 2
+	if next > max {
+		return max
+	}
+	return next
+}
+
 func registerWorker(client pb.CrackerServiceClient, workerID string, cpuCores int32) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -353,4 +383,83 @@ func reportResult(client pb.CrackerServiceClient, result *pb.CrackResult) error 
 		}
 	}
 	return nil
+}
+
+type statusSpinner struct {
+	interval time.Duration
+	mu       sync.Mutex
+	active   bool
+	message  string
+	stopCh   chan struct{}
+}
+
+func newStatusSpinner(interval time.Duration) *statusSpinner {
+	return &statusSpinner{interval: interval}
+}
+
+func (s *statusSpinner) Start(message string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.active && s.message == message {
+		s.mu.Unlock()
+		return
+	}
+	s.stopLocked()
+	stopCh := make(chan struct{})
+	s.stopCh = stopCh
+	s.message = message
+	s.active = true
+	interval := s.interval
+	s.mu.Unlock()
+
+	go func(msg string, stopCh chan struct{}, interval time.Duration) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		frames := []string{"-", "\\", "|", "/"}
+		index := 0
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				select {
+				case <-stopCh:
+					return
+				default:
+				}
+				fmt.Printf("\r%s %s", frames[index], msg)
+				index = (index + 1) % len(frames)
+			}
+		}
+	}(message, stopCh, interval)
+}
+
+func (s *statusSpinner) Stop() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.stopLocked()
+	s.mu.Unlock()
+}
+
+func (s *statusSpinner) stopLocked() {
+	if !s.active {
+		return
+	}
+	close(s.stopCh)
+	clearStatusLine(s.message)
+	s.active = false
+	s.stopCh = nil
+	s.message = ""
+}
+
+func clearStatusLine(message string) {
+	if message == "" {
+		return
+	}
+	width := len(message) + 2
+	fmt.Printf("\r%s\r", strings.Repeat(" ", width))
 }

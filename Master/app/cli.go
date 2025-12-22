@@ -24,6 +24,7 @@ const (
 )
 
 func handleCLI(args []string) error {
+	args = normalizeArgs(args)
 	fs := flag.NewFlagSet("cerberus", flag.ContinueOnError)
 	addr := fs.String("addr", defaultAdminAddress, "master gRPC address")
 	operator := fs.String("operator", defaultOperator(), "operator id")
@@ -52,6 +53,7 @@ func handleTaskCLI(addr, operator string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("missing task subcommand")
 	}
+	args[0] = normalizeTaskSubcommand(args[0])
 
 	client, conn, err := dialAdmin(addr)
 	if err != nil {
@@ -93,6 +95,9 @@ func handleWorkerCLI(addr string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("missing worker subcommand")
 	}
+	if args[0] == "-l" {
+		args[0] = "list"
+	}
 	if args[0] != "list" {
 		return fmt.Errorf("unknown worker subcommand %q", args[0])
 	}
@@ -127,7 +132,7 @@ func handleDispatchCLI(addr, operator string, args []string) error {
 	}
 
 	var paused bool
-	switch args[0] {
+	switch normalizeDispatchSubcommand(args[0]) {
 	case "pause":
 		paused = true
 	case "resume":
@@ -195,7 +200,7 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string) error
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Added task %s (%s)\n", task.Id, formatMode(task.Mode))
+	fmt.Printf("Added task %s (%s) and queued for dispatch.\n", task.Id, formatMode(task.Mode))
 	return nil
 }
 
@@ -236,7 +241,7 @@ func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string) 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Added %d task(s).\n", len(resp.Tasks))
+	fmt.Printf("Added %d task(s) and queued for dispatch.\n", len(resp.Tasks))
 	return nil
 }
 
@@ -337,17 +342,27 @@ func taskList(client pb.CrackerAdminClient, args []string) error {
 		return err
 	}
 
+	if len(resp.Tasks) == 0 {
+		fmt.Println("No tasks found.")
+		return nil
+	}
+	summary := summarizeTasks(resp.Tasks)
+	fmt.Printf("Total: %d | queued:%d reviewed:%d approved:%d running:%d completed:%d failed:%d canceled:%d | dispatch-ready:%d | paused:%d\n",
+		summary.total, summary.queued, summary.reviewed, summary.approved, summary.running,
+		summary.completed, summary.failed, summary.canceled, summary.dispatchReady, summary.paused)
+
 	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "ID\tSTATUS\tMODE\tHASH\tWORDLIST\tPROGRESS\tPRIORITY\tDISPATCH\tPAUSED")
+	fmt.Fprintln(writer, "ID\tSTATUS\tMODE\tHASH\tWORDLIST\tPROGRESS\tATTEMPTS\tFOUND\tPRIORITY\tDISPATCH\tPAUSED")
 	for _, task := range resp.Tasks {
-		progress := formatProgress(task.Completed, task.TotalKeyspace)
+		progress := formatProgressWithCounts(task.Completed, task.TotalKeyspace)
 		wordlist := task.WordlistPath
 		if wordlist == "" {
 			wordlist = "-"
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%t\t%t\n",
+		attempts := fmt.Sprintf("%d/%d", task.Attempts, task.MaxRetries)
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%d\t%t\t%t\n",
 			task.Id, formatTaskStatus(task.Status), formatMode(task.Mode), task.Hash, wordlist, progress,
-			task.Priority, task.DispatchReady, task.Paused)
+			attempts, task.Found, task.Priority, task.DispatchReady, task.Paused)
 	}
 	writer.Flush()
 	return nil
@@ -382,6 +397,15 @@ func taskShow(client pb.CrackerAdminClient, args []string) error {
 	fmt.Printf("  Priority: %d\n", task.Priority)
 	fmt.Printf("  Dispatch ready: %t\n", task.DispatchReady)
 	fmt.Printf("  Paused: %t\n", task.Paused)
+	if task.ReviewedBy != "" {
+		fmt.Printf("  Reviewed by: %s\n", task.ReviewedBy)
+	}
+	if task.ApprovedBy != "" {
+		fmt.Printf("  Approved by: %s\n", task.ApprovedBy)
+	}
+	if task.CanceledBy != "" {
+		fmt.Printf("  Canceled by: %s\n", task.CanceledBy)
+	}
 	if task.FoundPassword != "" {
 		fmt.Printf("  Found password: %s\n", task.FoundPassword)
 	}
@@ -530,4 +554,133 @@ func formatProgress(completed, total int64) string {
 	}
 	percent := float64(completed) / float64(total) * 100
 	return fmt.Sprintf("%.2f%%", percent)
+}
+
+func formatProgressWithCounts(completed, total int64) string {
+	return fmt.Sprintf("%s (%d/%d)", formatProgress(completed, total), completed, total)
+}
+
+type taskListSummary struct {
+	total         int
+	queued        int
+	reviewed      int
+	approved      int
+	running       int
+	completed     int
+	failed        int
+	canceled      int
+	dispatchReady int
+	paused        int
+}
+
+func summarizeTasks(tasks []*pb.Task) taskListSummary {
+	summary := taskListSummary{total: len(tasks)}
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		switch task.Status {
+		case pb.TaskStatus_TASK_STATUS_QUEUED:
+			summary.queued++
+		case pb.TaskStatus_TASK_STATUS_REVIEWED:
+			summary.reviewed++
+		case pb.TaskStatus_TASK_STATUS_APPROVED:
+			summary.approved++
+		case pb.TaskStatus_TASK_STATUS_RUNNING:
+			summary.running++
+		case pb.TaskStatus_TASK_STATUS_COMPLETED:
+			summary.completed++
+		case pb.TaskStatus_TASK_STATUS_FAILED:
+			summary.failed++
+		case pb.TaskStatus_TASK_STATUS_CANCELED:
+			summary.canceled++
+		}
+		if task.DispatchReady {
+			summary.dispatchReady++
+		}
+		if task.Paused {
+			summary.paused++
+		}
+	}
+	return summary
+}
+
+func normalizeArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	normalized := make([]string, len(args))
+	copy(normalized, args)
+	for i := 0; i < len(normalized); i++ {
+		arg := normalized[i]
+		if arg == "--" {
+			break
+		}
+		if isGlobalFlag(arg) {
+			if strings.Contains(arg, "=") {
+				continue
+			}
+			if i+1 < len(normalized) {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			if cmd, ok := commandAliases[arg]; ok {
+				normalized[i] = cmd
+				break
+			}
+			continue
+		}
+		break
+	}
+	return normalized
+}
+
+func isGlobalFlag(arg string) bool {
+	switch arg {
+	case "--addr", "-addr", "--operator", "-operator":
+		return true
+	}
+	return strings.HasPrefix(arg, "--addr=") ||
+		strings.HasPrefix(arg, "-addr=") ||
+		strings.HasPrefix(arg, "--operator=") ||
+		strings.HasPrefix(arg, "-operator=")
+}
+
+func normalizeTaskSubcommand(value string) string {
+	if mapped, ok := taskSubcommandAliases[value]; ok {
+		return mapped
+	}
+	return value
+}
+
+func normalizeDispatchSubcommand(value string) string {
+	if mapped, ok := dispatchSubcommandAliases[value]; ok {
+		return mapped
+	}
+	return value
+}
+
+var commandAliases = map[string]string{
+	"-t": "task",
+	"-w": "worker",
+	"-d": "dispatch",
+}
+
+var taskSubcommandAliases = map[string]string{
+	"-a": "add",
+	"-b": "add-batch",
+	"-l": "list",
+	"-s": "show",
+	"-d": "dispatch",
+	"-c": "cancel",
+	"-p": "pause",
+	"-u": "resume",
+	"-r": "retry",
+}
+
+var dispatchSubcommandAliases = map[string]string{
+	"-p": "pause",
+	"-r": "resume",
 }

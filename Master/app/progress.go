@@ -4,12 +4,29 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 )
 
-const masterProgressBarWidth = 24
+const (
+	masterProgressBarWidth    = 24
+	masterProgressLogInterval = 2 * time.Second
+)
+
+var progressLogTracker = &taskProgressTracker{
+	lastLogged: make(map[string]time.Time),
+}
+
+type taskProgressTracker struct {
+	mu         sync.Mutex
+	lastLogged map[string]time.Time
+}
 
 func logTaskProgress(task *Task, completed int64) {
 	if task == nil || task.TotalKeyspace <= 0 {
+		return
+	}
+	if !progressLogTracker.shouldLog(task.ID, time.Now()) {
 		return
 	}
 	if completed < 0 {
@@ -19,6 +36,17 @@ func logTaskProgress(task *Task, completed int64) {
 		completed = task.TotalKeyspace
 	}
 	log.Printf("Task %s progress %s", task.ID, formatProgressBar(completed, task.TotalKeyspace, masterProgressBarWidth))
+}
+
+func (t *taskProgressTracker) shouldLog(taskID string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last, ok := t.lastLogged[taskID]
+	if ok && now.Sub(last) < masterProgressLogInterval {
+		return false
+	}
+	t.lastLogged[taskID] = now
+	return true
 }
 
 func formatProgressBar(completed, total int64, width int) string {
