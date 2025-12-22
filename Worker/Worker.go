@@ -18,10 +18,11 @@ import (
 const MasterAddress = "localhost:50051" 
 
 func main() {
-	workerID := "worker-" + os.Getenv("COMPUTERNAME") // Atau gunakan UUID random
-	if workerID == "worker-" {
-		workerID = fmt.Sprintf("worker-%d", time.Now().Unix())
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = fmt.Sprintf("%d", time.Now().Unix())
 	}
+	workerID := "worker-" + hostname // Atau gunakan UUID random
 
 	log.Printf("Worker Starting: %s", workerID)
 
@@ -79,7 +80,7 @@ func main() {
 func bruteForceMD5(start, end int64, targetHash string) (bool, string) {
 	for i := start; i < end; i++ {
 		// Konversi angka ke string (misal: "12345")
-		candidate := fmt.Sprintf("%d", i)
+		candidate := fmt.Sprintf("%05d", i)
 		
 		// Hash MD5
 		hash := md5.Sum([]byte(candidate))
@@ -91,4 +92,3 @@ func bruteForceMD5(start, end int64, targetHash string) (bool, string) {
 	}
 	return false, ""
 }
-
