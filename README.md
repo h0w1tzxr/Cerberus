@@ -9,8 +9,8 @@ Proyek ini adalah demo sederhana **distributed hash cracking** berbasis gRPC den
 
 ## Struktur Singkat
 
-- `Master.go` — server gRPC (Master) yang membagikan pekerjaan dan menerima hasil.
-- `Worker.go` — klien gRPC (Worker) yang meminta task dan melakukan brute force.
+- `Master/Master.go` — server gRPC (Master) yang membagikan pekerjaan dan menerima hasil.
+- `Worker/Worker.go` — klien gRPC (Worker) yang meminta task dan melakukan brute force.
 - `cracker/` — file protobuf dan hasil generate gRPC.
 
 ## Walkthrough Lengkap (Cara Pakai)
@@ -33,22 +33,21 @@ go mod tidy
 Di **mesin Master**:
 
 ```bash
-go run Master.go
+go run ./Master
 ```
 
 Output yang diharapkan (contoh):
 
 ```
 Master Hash Cracker running on port :50051
-Target Hash: 21218cca77804d2ba1922c33e0151105
 Ready for Workers...
 ```
 
-> **Catatan:** Target hash default adalah MD5 dari string `"88888"`.
+> **Catatan:** Master sekarang memakai alur manual (review → approve → dispatch). Task ditambahkan lewat CLI admin.
 
 ### 4) Konfigurasi Worker (IP Master)
 
-Di **mesin Worker**, ubah alamat Master di `Worker.go`:
+Di **mesin Worker**, ubah alamat Master di `Worker/Worker.go`:
 
 ```go
 // Ganti IP ini dengan IP Laptop Master saat Demo
@@ -64,7 +63,7 @@ const MasterAddress = "192.168.1.10:50051"
 ### 5) Jalankan Worker
 
 ```bash
-go run Worker.go
+go run ./Worker
 ```
 
 Output yang diharapkan (contoh):
@@ -77,12 +76,43 @@ Processing chunk: 1000 - 2000
 I FOUND THE PASSWORD! Exiting...
 ```
 
-### 6) Tambahkan Banyak Worker (Distributed)
+### 6) Tambahkan & Kelola Task (Manual Flow)
+
+Tambah task dengan mode hash yang eksplisit (md5 atau sha256):
+
+```bash
+go run ./Master task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
+```
+
+Jika memakai wordlist:
+
+```bash
+go run ./Master task add --hash <hash> --mode sha256 --wordlist wordlist.txt --chunk 1000
+```
+
+> **Catatan:** Path wordlist harus tersedia di mesin Worker (path yang sama).
+
+Review, approve, lalu dispatch agar worker mulai mengambil chunk:
+
+```bash
+go run ./Master task review <task-id>
+go run ./Master task approve <task-id>
+go run ./Master task dispatch <task-id>
+```
+
+Lihat status dan progress:
+
+```bash
+go run ./Master task list
+go run ./Master task show <task-id>
+```
+
+### 7) Tambahkan Banyak Worker (Distributed)
 
 Jalankan beberapa Worker di mesin lain (atau terminal lain) untuk mempercepat proses:
 
 ```bash
-go run Worker.go
+go run ./Worker
 ```
 
 Master akan membagi task ke setiap worker yang terhubung.
@@ -97,6 +127,6 @@ Master akan membagi task ke setiap worker yang terhubung.
 
 ## Tips Demo
 
-- Untuk demo cepat, biarkan `TotalKeyspace` di `Master.go` (default 100000).
-- Jika ingin lebih cepat lagi, kecilkan `TotalKeyspace` atau `ChunkSize`.
+- Untuk demo cepat, gunakan `--keyspace 100000` dan `--chunk 1000`.
+- Jika ingin lebih cepat lagi, kecilkan `--keyspace` atau `--chunk`.
 - Pastikan port `50051` tidak diblok oleh firewall.

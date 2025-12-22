@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"cracker/Common/wordlist"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
@@ -17,6 +19,8 @@ import (
 
 // Ganti IP ini dengan IP Laptop Master saat Demo
 const MasterAddress = "localhost:50051"
+
+var wordlistCache = wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes)
 
 func main() {
 	hostname, err := os.Hostname()
@@ -48,6 +52,12 @@ func main() {
 			continue
 		}
 
+		if task.DispatchPaused {
+			log.Println("Dispatch paused. Waiting...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
 		if task.NoMoreWork {
 			log.Println("No more work from Master. Job Done or Password Found!")
 			break
@@ -55,7 +65,7 @@ func main() {
 
 		// Proses Cracking
 		log.Printf("Processing chunk: %d - %d", task.StartIndex, task.EndIndex)
-		found, passwd := bruteForceMD5(task.StartIndex, task.EndIndex, task.TargetHash)
+		found, passwd, errMsg := processTask(task)
 
 		// Lapor Hasil
 		_, err = c.ReportResult(context.Background(), &pb.CrackResult{
@@ -63,6 +73,7 @@ func main() {
 			WorkerId:      workerID,
 			Success:       found,
 			FoundPassword: passwd,
+			ErrorMessage:  errMsg,
 		})
 
 		if err != nil {
@@ -76,20 +87,75 @@ func main() {
 	}
 }
 
-// Fungsi sederhana brute force angka (sesuai demo)
+func processTask(task *pb.TaskChunk) (bool, string, string) {
+	if task.WordlistPath != "" {
+		return bruteForceWordlist(task.WordlistPath, task.StartIndex, task.EndIndex, task.TargetHash, normalizeMode(task.Mode))
+	}
+	return bruteForceRange(task.StartIndex, task.EndIndex, task.TotalKeyspace, task.TargetHash, normalizeMode(task.Mode))
+}
+
+func bruteForceWordlist(path string, start, end int64, targetHash string, mode pb.HashMode) (bool, string, string) {
+	index, err := wordlistCache.Get(path)
+	if err != nil {
+		return false, "", err.Error()
+	}
+	reader, err := wordlist.NewReader(index)
+	if err != nil {
+		return false, "", err.Error()
+	}
+	defer reader.Close()
+
+	var found bool
+	var password string
+	err = reader.ReadRange(start, end, func(line string, lineNumber int64) error {
+		if hashCandidate(mode, line) == targetHash {
+			found = true
+			password = line
+			return wordlist.ErrStop
+		}
+		return nil
+	})
+	if err != nil {
+		return false, "", err.Error()
+	}
+	return found, password, ""
+}
+
+// Fungsi sederhana brute force angka
 // Di dunia nyata, ini akan mencoba wordlist atau kombinasi karakter
-func bruteForceMD5(start, end int64, targetHash string) (bool, string) {
-	for i := start; i < end; i++ {
-		// Konversi angka ke string (misal: "12345")
-		candidate := fmt.Sprintf("%05d", i)
-
-		// Hash MD5
-		hash := md5.Sum([]byte(candidate))
-		hashString := hex.EncodeToString(hash[:])
-
-		if hashString == targetHash {
-			return true, candidate
+func bruteForceRange(start, end, totalKeyspace int64, targetHash string, mode pb.HashMode) (bool, string, string) {
+	width := 1
+	if totalKeyspace > 0 {
+		width = len(fmt.Sprintf("%d", totalKeyspace-1))
+		if width < 1 {
+			width = 1
 		}
 	}
-	return false, ""
+	for i := start; i < end; i++ {
+		candidate := fmt.Sprintf("%0*d", width, i)
+		if hashCandidate(mode, candidate) == targetHash {
+			return true, candidate, ""
+		}
+	}
+	return false, "", ""
+}
+
+func hashCandidate(mode pb.HashMode, candidate string) string {
+	switch normalizeMode(mode) {
+	case pb.HashMode_HASH_MODE_SHA256:
+		hash := sha256.Sum256([]byte(candidate))
+		return hex.EncodeToString(hash[:])
+	default:
+		hash := md5.Sum([]byte(candidate))
+		return hex.EncodeToString(hash[:])
+	}
+}
+
+func normalizeMode(mode pb.HashMode) pb.HashMode {
+	switch mode {
+	case pb.HashMode_HASH_MODE_MD5, pb.HashMode_HASH_MODE_SHA256:
+		return mode
+	default:
+		return pb.HashMode_HASH_MODE_MD5
+	}
 }
