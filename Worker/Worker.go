@@ -9,13 +9,14 @@ import (
 	"os"
 	"time"
 
-	pb "hashcracker/cracker"
+	pb "cracker/cracker"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Ganti IP ini dengan IP Laptop Master saat Demo
-const MasterAddress = "localhost:50051" 
+const MasterAddress = "localhost:50051"
 
 func main() {
 	hostname, err := os.Hostname()
@@ -63,7 +64,7 @@ func main() {
 			Success:       found,
 			FoundPassword: passwd,
 		})
-		
+
 		if err != nil {
 			log.Printf("Failed to report result: %v", err)
 		}
@@ -81,7 +82,7 @@ func bruteForceMD5(start, end int64, targetHash string) (bool, string) {
 	for i := start; i < end; i++ {
 		// Konversi angka ke string (misal: "12345")
 		candidate := fmt.Sprintf("%05d", i)
-		
+
 		// Hash MD5
 		hash := md5.Sum([]byte(candidate))
 		hashString := hex.EncodeToString(hash[:])
