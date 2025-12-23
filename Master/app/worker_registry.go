@@ -3,10 +3,17 @@ package master
 import "time"
 
 type workerInfo struct {
-	ID       string
-	CPUCores int32
-	LastSeen time.Time
-	AvgRate  float64
+	ID                string
+	CPUCores          int32
+	LastSeen          time.Time
+	AvgRate           float64
+	TotalProcessed    int64
+	TotalDuration     time.Duration
+	CompletedChunks   int64
+	LastChunkID       string
+	LastTaskID        string
+	LastChunkRate     float64
+	LastChunkDuration time.Duration
 }
 
 type workerStatus struct {

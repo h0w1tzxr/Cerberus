@@ -24,8 +24,20 @@ const (
 )
 
 func handleCLI(args []string) error {
+	writer := bufio.NewWriter(os.Stdout)
+	defer writer.Flush()
+	return handleCLIWithWriter(args, writer)
+}
+
+func handleCLIWithWriter(args []string, out io.Writer) error {
+	if target, ok := helpContext(args); ok {
+		renderHelp(out, target)
+		return nil
+	}
+
 	args = normalizeArgs(args)
 	fs := flag.NewFlagSet("cerberus", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	addr := fs.String("addr", defaultAdminAddress, "master gRPC address")
 	operator := fs.String("operator", defaultOperator(), "operator id")
 	if err := fs.Parse(args); err != nil {
@@ -39,17 +51,17 @@ func handleCLI(args []string) error {
 
 	switch remaining[0] {
 	case "task":
-		return handleTaskCLI(*addr, *operator, remaining[1:])
+		return handleTaskCLI(*addr, *operator, remaining[1:], out)
 	case "worker":
-		return handleWorkerCLI(*addr, remaining[1:])
+		return handleWorkerCLI(*addr, remaining[1:], out)
 	case "dispatch":
-		return handleDispatchCLI(*addr, *operator, remaining[1:])
+		return handleDispatchCLI(*addr, *operator, remaining[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", remaining[0])
 	}
 }
 
-func handleTaskCLI(addr, operator string, args []string) error {
+func handleTaskCLI(addr, operator string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing task subcommand")
 	}
@@ -63,35 +75,35 @@ func handleTaskCLI(addr, operator string, args []string) error {
 
 	switch args[0] {
 	case "add":
-		return taskAdd(client, operator, args[1:])
+		return taskAdd(client, operator, args[1:], out)
 	case "add-batch":
-		return taskAddBatch(client, operator, args[1:])
+		return taskAddBatch(client, operator, args[1:], out)
 	case "review":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_REVIEW, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_REVIEW, args[1:], out)
 	case "approve":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_APPROVE, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_APPROVE, args[1:], out)
 	case "dispatch":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_DISPATCH, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_DISPATCH, args[1:], out)
 	case "cancel":
-		return taskCancel(client, operator, args[1:])
+		return taskCancel(client, operator, args[1:], out)
 	case "retry":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_RETRY, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_RETRY, args[1:], out)
 	case "pause":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_PAUSE, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_PAUSE, args[1:], out)
 	case "resume":
-		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_RESUME, args[1:])
+		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_RESUME, args[1:], out)
 	case "set-priority":
-		return taskSetPriority(client, operator, args[1:])
+		return taskSetPriority(client, operator, args[1:], out)
 	case "list":
-		return taskList(client, args[1:])
+		return taskList(client, args[1:], out)
 	case "show":
-		return taskShow(client, args[1:])
+		return taskShow(client, args[1:], out)
 	default:
 		return fmt.Errorf("unknown task subcommand %q", args[0])
 	}
 }
 
-func handleWorkerCLI(addr string, args []string) error {
+func handleWorkerCLI(addr string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing worker subcommand")
 	}
@@ -115,7 +127,7 @@ func handleWorkerCLI(addr string, args []string) error {
 		return err
 	}
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "WORKER\tCORES\tLAST_SEEN\tINFLIGHT\tHEALTH")
 	for _, worker := range resp.Workers {
 		lastSeen := time.Unix(worker.LastSeenUnix, 0).Format(time.RFC3339)
@@ -126,7 +138,7 @@ func handleWorkerCLI(addr string, args []string) error {
 	return nil
 }
 
-func handleDispatchCLI(addr, operator string, args []string) error {
+func handleDispatchCLI(addr, operator string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing dispatch subcommand")
 	}
@@ -158,14 +170,14 @@ func handleDispatchCLI(addr, operator string, args []string) error {
 	}
 
 	if resp.Paused {
-		fmt.Println("Dispatch paused.")
+		fmt.Fprintln(out, "Dispatch paused.")
 	} else {
-		fmt.Println("Dispatch resumed.")
+		fmt.Fprintln(out, "Dispatch resumed.")
 	}
 	return nil
 }
 
-func taskAdd(client pb.CrackerAdminClient, operator string, args []string) error {
+func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task add", flag.ContinueOnError)
 	hash := fs.String("hash", "", "target hash")
 	mode := fs.String("mode", "", "hash mode (md5|sha256)")
@@ -200,11 +212,11 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string) error
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Added task %s (%s) and queued for dispatch.\n", task.Id, formatMode(task.Mode))
+	fmt.Fprintf(out, "Added task %s (%s) and queued for dispatch.\n", task.Id, formatMode(task.Mode))
 	return nil
 }
 
-func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string) error {
+func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task add-batch", flag.ContinueOnError)
 	filePath := fs.String("file", "", "path to hashes file ('-' for stdin)")
 	useStdin := fs.Bool("stdin", false, "read hashes from stdin")
@@ -241,11 +253,11 @@ func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string) 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Added %d task(s) and queued for dispatch.\n", len(resp.Tasks))
+	fmt.Fprintf(out, "Added %d task(s) and queued for dispatch.\n", len(resp.Tasks))
 	return nil
 }
 
-func taskActionMany(client pb.CrackerAdminClient, operator string, action pb.TaskAction, args []string) error {
+func taskActionMany(client pb.CrackerAdminClient, operator string, action pb.TaskAction, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("task id is required")
 	}
@@ -264,12 +276,12 @@ func taskActionMany(client pb.CrackerAdminClient, operator string, action pb.Tas
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Updated task %s\n", taskID)
+		fmt.Fprintf(out, "Updated task %s\n", taskID)
 	}
 	return nil
 }
 
-func taskCancel(client pb.CrackerAdminClient, operator string, args []string) error {
+func taskCancel(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task cancel", flag.ContinueOnError)
 	reason := fs.String("reason", "", "cancel reason")
 	if err := fs.Parse(args); err != nil {
@@ -291,12 +303,12 @@ func taskCancel(client pb.CrackerAdminClient, operator string, args []string) er
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Canceled task %s\n", taskID)
+		fmt.Fprintf(out, "Canceled task %s\n", taskID)
 	}
 	return nil
 }
 
-func taskSetPriority(client pb.CrackerAdminClient, operator string, args []string) error {
+func taskSetPriority(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task set-priority", flag.ContinueOnError)
 	priority := fs.Int("priority", 0, "priority (higher is sooner)")
 	if err := fs.Parse(args); err != nil {
@@ -318,12 +330,12 @@ func taskSetPriority(client pb.CrackerAdminClient, operator string, args []strin
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Set priority for task %s\n", taskID)
+		fmt.Fprintf(out, "Set priority for task %s\n", taskID)
 	}
 	return nil
 }
 
-func taskList(client pb.CrackerAdminClient, args []string) error {
+func taskList(client pb.CrackerAdminClient, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task list", flag.ContinueOnError)
 	statuses := fs.String("status", "", "comma-separated statuses (queued,reviewed,approved,running,completed,failed,canceled)")
 	if err := fs.Parse(args); err != nil {
@@ -343,15 +355,15 @@ func taskList(client pb.CrackerAdminClient, args []string) error {
 	}
 
 	if len(resp.Tasks) == 0 {
-		fmt.Println("No tasks found.")
+		fmt.Fprintln(out, "No tasks found.")
 		return nil
 	}
 	summary := summarizeTasks(resp.Tasks)
-	fmt.Printf("Total: %d | queued:%d reviewed:%d approved:%d running:%d completed:%d failed:%d canceled:%d | dispatch-ready:%d | paused:%d\n",
+	fmt.Fprintf(out, "Total: %d | queued:%d reviewed:%d approved:%d running:%d completed:%d failed:%d canceled:%d | dispatch-ready:%d | paused:%d\n",
 		summary.total, summary.queued, summary.reviewed, summary.approved, summary.running,
 		summary.completed, summary.failed, summary.canceled, summary.dispatchReady, summary.paused)
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS\tMODE\tHASH\tWORDLIST\tPROGRESS\tATTEMPTS\tFOUND\tPRIORITY\tDISPATCH\tPAUSED")
 	for _, task := range resp.Tasks {
 		progress := formatProgressWithCounts(task.Completed, task.TotalKeyspace)
@@ -368,7 +380,7 @@ func taskList(client pb.CrackerAdminClient, args []string) error {
 	return nil
 }
 
-func taskShow(client pb.CrackerAdminClient, args []string) error {
+func taskShow(client pb.CrackerAdminClient, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("task id is required")
 	}
@@ -383,37 +395,37 @@ func taskShow(client pb.CrackerAdminClient, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Task %s\n", task.Id)
-	fmt.Printf("  Status: %s\n", formatTaskStatus(task.Status))
-	fmt.Printf("  Hash: %s\n", task.Hash)
-	fmt.Printf("  Mode: %s\n", formatMode(task.Mode))
-	fmt.Printf("  Wordlist: %s\n", formatOptional(task.WordlistPath))
-	fmt.Printf("  Chunk size: %d\n", task.ChunkSize)
-	fmt.Printf("  Total keyspace: %d\n", task.TotalKeyspace)
-	fmt.Printf("  Completed: %d\n", task.Completed)
-	fmt.Printf("  Progress: %s\n", formatProgress(task.Completed, task.TotalKeyspace))
-	fmt.Printf("  Next index: %d\n", task.NextIndex)
-	fmt.Printf("  Attempts: %d/%d\n", task.Attempts, task.MaxRetries)
-	fmt.Printf("  Priority: %d\n", task.Priority)
-	fmt.Printf("  Dispatch ready: %t\n", task.DispatchReady)
-	fmt.Printf("  Paused: %t\n", task.Paused)
+	fmt.Fprintf(out, "Task %s\n", task.Id)
+	fmt.Fprintf(out, "  Status: %s\n", formatTaskStatus(task.Status))
+	fmt.Fprintf(out, "  Hash: %s\n", task.Hash)
+	fmt.Fprintf(out, "  Mode: %s\n", formatMode(task.Mode))
+	fmt.Fprintf(out, "  Wordlist: %s\n", formatOptional(task.WordlistPath))
+	fmt.Fprintf(out, "  Chunk size: %d\n", task.ChunkSize)
+	fmt.Fprintf(out, "  Total keyspace: %d\n", task.TotalKeyspace)
+	fmt.Fprintf(out, "  Completed: %d\n", task.Completed)
+	fmt.Fprintf(out, "  Progress: %s\n", formatProgress(task.Completed, task.TotalKeyspace))
+	fmt.Fprintf(out, "  Next index: %d\n", task.NextIndex)
+	fmt.Fprintf(out, "  Attempts: %d/%d\n", task.Attempts, task.MaxRetries)
+	fmt.Fprintf(out, "  Priority: %d\n", task.Priority)
+	fmt.Fprintf(out, "  Dispatch ready: %t\n", task.DispatchReady)
+	fmt.Fprintf(out, "  Paused: %t\n", task.Paused)
 	if task.ReviewedBy != "" {
-		fmt.Printf("  Reviewed by: %s\n", task.ReviewedBy)
+		fmt.Fprintf(out, "  Reviewed by: %s\n", task.ReviewedBy)
 	}
 	if task.ApprovedBy != "" {
-		fmt.Printf("  Approved by: %s\n", task.ApprovedBy)
+		fmt.Fprintf(out, "  Approved by: %s\n", task.ApprovedBy)
 	}
 	if task.CanceledBy != "" {
-		fmt.Printf("  Canceled by: %s\n", task.CanceledBy)
+		fmt.Fprintf(out, "  Canceled by: %s\n", task.CanceledBy)
 	}
 	if task.FoundPassword != "" {
-		fmt.Printf("  Found password: %s\n", task.FoundPassword)
+		fmt.Fprintf(out, "  Found password: %s\n", task.FoundPassword)
 	}
 	if task.FailureReason != "" {
-		fmt.Printf("  Failure reason: %s\n", task.FailureReason)
+		fmt.Fprintf(out, "  Failure reason: %s\n", task.FailureReason)
 	}
-	fmt.Printf("  Created: %s\n", time.Unix(task.CreatedAtUnix, 0).Format(time.RFC3339))
-	fmt.Printf("  Updated: %s\n", time.Unix(task.UpdatedAtUnix, 0).Format(time.RFC3339))
+	fmt.Fprintf(out, "  Created: %s\n", time.Unix(task.CreatedAtUnix, 0).Format(time.RFC3339))
+	fmt.Fprintf(out, "  Updated: %s\n", time.Unix(task.UpdatedAtUnix, 0).Format(time.RFC3339))
 	return nil
 }
 
@@ -683,4 +695,8 @@ var taskSubcommandAliases = map[string]string{
 var dispatchSubcommandAliases = map[string]string{
 	"-p": "pause",
 	"-r": "resume",
+}
+
+var workerSubcommandAliases = map[string]string{
+	"-l": "list",
 }

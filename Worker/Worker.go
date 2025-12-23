@@ -9,10 +9,9 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"strings"
-	"sync"
 	"time"
 
+	"cracker/Common/console"
 	"cracker/Common/wordlist"
 	pb "cracker/cracker"
 
@@ -21,7 +20,7 @@ import (
 )
 
 // Ganti IP ini dengan IP Laptop Master saat Demo
-const MasterAddress = "10.110.1.126:50051"
+const MasterAddress = "10.110.1.43:50051"
 
 var wordlistCache = wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes)
 
@@ -31,9 +30,8 @@ const (
 	maxErrorDelay       = 15 * time.Second
 	progressLogInterval = 2 * time.Second
 	progressReportEvery = int64(200)
-	progressBarWidth    = 24
 	getTaskTimeout      = 4 * time.Second
-	statusTickInterval  = 200 * time.Millisecond
+	renderInterval      = time.Second / 30
 )
 
 func main() {
@@ -44,35 +42,44 @@ func main() {
 	workerID := "worker-" + hostname // Atau gunakan UUID random
 
 	cpuCores := int32(runtime.NumCPU())
-	log.Printf("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, MasterAddress)
+	telemetry := newWorkerTelemetry()
+	renderer := console.NewStickyRenderer(os.Stdout)
+	log.SetOutput(renderer)
+	renderLoop := console.NewRenderLoop(renderer, renderInterval, telemetry.StatusLine)
+	renderLoop.Start()
+	defer renderLoop.Stop()
+
+	telemetry.SetState("starting")
+	logInfo("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, MasterAddress)
 
 	// 1. Connect ke Master via gRPC
+	telemetry.SetState("connecting")
 	conn, err := grpc.Dial(MasterAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("did not connect: %v", err)
+		logError("Did not connect: %v", err)
+		return
 	}
 	defer conn.Close()
 	c := pb.NewCrackerServiceClient(conn)
 
 	registerWorker(c, workerID, cpuCores)
 
-	status := newStatusSpinner(statusTickInterval)
 	idleDelay := standbyDelay
 	errorDelay := standbyDelay
 
 	// 2. Loop Work Stealing
 	for {
 		// Minta Task (Pull)
+		telemetry.SetState("fetching")
 		ctx, cancel := context.WithTimeout(context.Background(), getTaskTimeout)
 		task, err := c.GetTask(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
 		cancel()
 
 		if err != nil {
 			if errorDelay == standbyDelay {
-				status.Stop()
-				log.Printf("Error getting task: %v", err)
+				logError("Error getting task: %v", err)
 			}
-			status.Start("Master unavailable. Retrying...")
+			telemetry.SetState("master-down")
 			time.Sleep(errorDelay)
 			errorDelay = nextDelay(errorDelay, maxErrorDelay)
 			continue
@@ -80,80 +87,100 @@ func main() {
 		errorDelay = standbyDelay
 
 		if task.DispatchPaused {
-			status.Start("Waiting for dispatch...")
+			telemetry.SetState("dispatch-paused")
 			time.Sleep(idleDelay)
 			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
 
 		if task.NoMoreWork {
-			status.Start("No work available. Standing by...")
+			telemetry.SetState("idle")
 			time.Sleep(idleDelay)
 			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
-		status.Stop()
 		idleDelay = standbyDelay
 
 		// Proses Cracking
-		log.Printf("Processing chunk: %d - %d", task.StartIndex, task.EndIndex)
+		telemetry.StartChunk(task.TaskId, task.EndIndex-task.StartIndex)
+		logInfo("Processing chunk: %d - %d", task.StartIndex, task.EndIndex)
 		progressFn := func(processed, total int64) {
+			telemetry.UpdateProgress(processed, total)
 			reportProgress(c, workerID, task.TaskId, processed, total)
 		}
-		found, passwd, errMsg := processTask(task, progressFn)
+		found, passwd, errMsg, stats := processTask(task, progressFn)
+		avgRate := 0.0
+		if stats.duration > 0 && stats.processed > 0 {
+			avgRate = float64(stats.processed) / stats.duration.Seconds()
+		}
+		telemetry.FinishChunk(stats.processed, stats.total)
 		if errMsg != "" {
-			log.Printf("Chunk %d-%d failed: %s", task.StartIndex, task.EndIndex, errMsg)
+			logError("Chunk %d-%d failed: %s (duration=%s avg=%s)", task.StartIndex, task.EndIndex, errMsg, formatDuration(stats.duration), console.FormatHashRate(avgRate))
 		} else if found {
-			log.Printf("Password found for chunk %d-%d: %s", task.StartIndex, task.EndIndex, passwd)
+			logSuccess("Password found for chunk %d-%d: %s (duration=%s avg=%s)", task.StartIndex, task.EndIndex, passwd, formatDuration(stats.duration), console.FormatHashRate(avgRate))
 		} else {
-			log.Printf("Chunk %d-%d exhausted with no match.", task.StartIndex, task.EndIndex)
+			logWarn("Chunk %d-%d exhausted with no match (duration=%s avg=%s)", task.StartIndex, task.EndIndex, formatDuration(stats.duration), console.FormatHashRate(avgRate))
 		}
 
 		// Lapor Hasil
+		telemetry.SetState("reporting")
 		err = reportResult(c, &pb.CrackResult{
 			TaskId:        task.TaskId,
 			WorkerId:      workerID,
 			Success:       found,
 			FoundPassword: passwd,
 			ErrorMessage:  errMsg,
+			Processed:     stats.processed,
+			Total:         stats.total,
+			DurationMs:    stats.duration.Milliseconds(),
+			AvgRate:       avgRate,
 		})
 
 		if err != nil {
-			log.Printf("Failed to report result: %v", err)
+			logWarn("Failed to report result: %v", err)
 		}
 
+		telemetry.SetState("idle")
 		if found {
-			log.Println("Password found. Standing by...")
+			logInfo("Password found. Standing by...")
 			time.Sleep(standbyDelay)
 			continue
 		}
 	}
 }
 
-func processTask(task *pb.TaskChunk, onProgress func(processed, total int64)) (bool, string, string) {
+type chunkStats struct {
+	processed int64
+	total     int64
+	duration  time.Duration
+}
+
+func processTask(task *pb.TaskChunk, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
 	if task.WordlistPath != "" {
 		return bruteForceWordlist(task.WordlistPath, task.StartIndex, task.EndIndex, task.TargetHash, normalizeMode(task.Mode), onProgress)
 	}
 	return bruteForceRange(task.StartIndex, task.EndIndex, task.TotalKeyspace, task.TargetHash, normalizeMode(task.Mode), onProgress)
 }
 
-func bruteForceWordlist(path string, start, end int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string) {
+func bruteForceWordlist(path string, start, end int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
 	index, err := wordlistCache.Get(path)
 	if err != nil {
-		return false, "", err.Error()
+		return false, "", err.Error(), chunkStats{}
 	}
 	reader, err := wordlist.NewReader(index)
 	if err != nil {
-		return false, "", err.Error()
+		return false, "", err.Error(), chunkStats{}
 	}
 	defer reader.Close()
 
 	var found bool
 	var password string
 	total := end - start
+	var processed int64
 	reporter := newProgressReporter(fmt.Sprintf("Chunk %d-%d", start, end), total, progressLogInterval, onProgress)
+	started := time.Now()
 	err = reader.ReadRange(start, end, func(line string, lineNumber int64) error {
-		processed := lineNumber - start + 1
+		processed = lineNumber - start + 1
 		if processed%progressReportEvery == 0 || processed == total {
 			reporter.MaybeLog(processed)
 		}
@@ -165,16 +192,17 @@ func bruteForceWordlist(path string, start, end int64, targetHash string, mode p
 		}
 		return nil
 	})
+	stats := chunkStats{processed: processed, total: total, duration: time.Since(started)}
 	if err != nil {
-		return false, "", err.Error()
+		return false, "", err.Error(), stats
 	}
 	reporter.LogNow(total)
-	return found, password, ""
+	return found, password, "", stats
 }
 
 // Fungsi sederhana brute force angka
 // Di dunia nyata, ini akan mencoba wordlist atau kombinasi karakter
-func bruteForceRange(start, end, totalKeyspace int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string) {
+func bruteForceRange(start, end, totalKeyspace int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
 	width := 1
 	if totalKeyspace > 0 {
 		width = len(fmt.Sprintf("%d", totalKeyspace-1))
@@ -184,19 +212,22 @@ func bruteForceRange(start, end, totalKeyspace int64, targetHash string, mode pb
 	}
 	total := end - start
 	reporter := newProgressReporter(fmt.Sprintf("Chunk %d-%d", start, end), total, progressLogInterval, onProgress)
+	started := time.Now()
+	var processed int64
 	for i := start; i < end; i++ {
 		candidate := fmt.Sprintf("%0*d", width, i)
 		if hashCandidate(mode, candidate) == targetHash {
 			reporter.LogNow(i - start + 1)
-			return true, candidate, ""
+			processed = i - start + 1
+			return true, candidate, "", chunkStats{processed: processed, total: total, duration: time.Since(started)}
 		}
-		processed := i - start + 1
+		processed = i - start + 1
 		if processed%progressReportEvery == 0 || i+1 == end {
 			reporter.MaybeLog(processed)
 		}
 	}
 	reporter.LogNow(total)
-	return false, "", ""
+	return false, "", "", chunkStats{processed: total, total: total, duration: time.Since(started)}
 }
 
 func hashCandidate(mode pb.HashMode, candidate string) string {
@@ -265,64 +296,10 @@ func (p *progressReporter) log(current int64, now time.Time) {
 	if current > p.total {
 		current = p.total
 	}
-	elapsed := now.Sub(p.started)
-	rate := ratePerSecond(current, elapsed)
-	eta := estimateETA(p.total-current, rate)
-	log.Printf("%s %s rate=%s eta=%s", p.label, formatProgressBar(current, p.total, progressBarWidth), formatRate(rate), formatDuration(eta))
 	p.lastLog = now
 	if p.onProgress != nil {
 		p.onProgress(current, p.total)
 	}
-}
-
-func formatProgressBar(completed, total int64, width int) string {
-	if total <= 0 || width <= 0 {
-		return "[no-progress]"
-	}
-	percent := float64(completed) / float64(total)
-	filled := int(percent * float64(width))
-	if filled > width {
-		filled = width
-	}
-	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
-	return fmt.Sprintf("[%s] %6.2f%% (%d/%d)", bar, percent*100, completed, total)
-}
-
-func ratePerSecond(processed int64, elapsed time.Duration) float64 {
-	if processed <= 0 {
-		return 0
-	}
-	seconds := elapsed.Seconds()
-	if seconds <= 0 {
-		return 0
-	}
-	return float64(processed) / seconds
-}
-
-func estimateETA(remaining int64, rate float64) time.Duration {
-	if remaining <= 0 || rate <= 0 {
-		return 0
-	}
-	seconds := float64(remaining) / rate
-	return time.Duration(seconds * float64(time.Second))
-}
-
-func formatRate(rate float64) string {
-	if rate <= 0 {
-		return "-"
-	}
-	return fmt.Sprintf("%.0f/s", rate)
-}
-
-func formatDuration(duration time.Duration) string {
-	if duration <= 0 {
-		return "-"
-	}
-	totalSeconds := int(duration.Seconds())
-	hours := totalSeconds / 3600
-	minutes := (totalSeconds % 3600) / 60
-	seconds := totalSeconds % 60
-	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }
 
 func nextDelay(current, max time.Duration) time.Duration {
@@ -344,7 +321,7 @@ func registerWorker(client pb.CrackerServiceClient, workerID string, cpuCores in
 		if err == nil {
 			return
 		}
-		log.Printf("Failed to register worker (attempt %d): %v", attempt, err)
+		logWarn("Failed to register worker (attempt %d): %v", attempt, err)
 		time.Sleep(standbyDelay)
 	}
 }
@@ -362,7 +339,7 @@ func reportProgress(client pb.CrackerServiceClient, workerID, chunkID string, pr
 	})
 	cancel()
 	if err != nil {
-		log.Printf("Failed to report progress: %v", err)
+		logWarn("Failed to report progress: %v", err)
 	}
 }
 
@@ -383,83 +360,4 @@ func reportResult(client pb.CrackerServiceClient, result *pb.CrackResult) error 
 		}
 	}
 	return nil
-}
-
-type statusSpinner struct {
-	interval time.Duration
-	mu       sync.Mutex
-	active   bool
-	message  string
-	stopCh   chan struct{}
-}
-
-func newStatusSpinner(interval time.Duration) *statusSpinner {
-	return &statusSpinner{interval: interval}
-}
-
-func (s *statusSpinner) Start(message string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	if s.active && s.message == message {
-		s.mu.Unlock()
-		return
-	}
-	s.stopLocked()
-	stopCh := make(chan struct{})
-	s.stopCh = stopCh
-	s.message = message
-	s.active = true
-	interval := s.interval
-	s.mu.Unlock()
-
-	go func(msg string, stopCh chan struct{}, interval time.Duration) {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		frames := []string{"-", "\\", "|", "/"}
-		index := 0
-		for {
-			select {
-			case <-stopCh:
-				return
-			case <-ticker.C:
-				select {
-				case <-stopCh:
-					return
-				default:
-				}
-				fmt.Printf("\r%s %s", frames[index], msg)
-				index = (index + 1) % len(frames)
-			}
-		}
-	}(message, stopCh, interval)
-}
-
-func (s *statusSpinner) Stop() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.stopLocked()
-	s.mu.Unlock()
-}
-
-func (s *statusSpinner) stopLocked() {
-	if !s.active {
-		return
-	}
-	close(s.stopCh)
-	clearStatusLine(s.message)
-	s.active = false
-	s.stopCh = nil
-	s.message = ""
-}
-
-func clearStatusLine(message string) {
-	if message == "" {
-		return
-	}
-	width := len(message) + 2
-	fmt.Printf("\r%s\r", strings.Repeat(" ", width))
 }

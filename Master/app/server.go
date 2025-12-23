@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
+	"cracker/Common/console"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
@@ -22,6 +24,7 @@ const (
 type server struct {
 	pb.UnimplementedCrackerServiceServer
 	state *masterState
+	ui    *masterUI
 }
 
 func (s *server) RegisterWorker(ctx context.Context, in *pb.WorkerInfo) (*pb.Ack, error) {
@@ -67,7 +70,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 				s.state.enqueueTaskLocked(task)
 			}
 			s.state.mu.Unlock()
-			log.Printf("Assigned chunk %s for task %s to %s: %d-%d", chunk.TaskId, task.ID, workerID, start, end)
+			logInfo("Assigned chunk %s for task %s to %s: %d-%d", chunk.TaskId, task.ID, workerID, start, end)
 			return chunk, nil
 		}
 
@@ -99,10 +102,16 @@ func (s *server) ReportProgress(ctx context.Context, in *pb.ProgressUpdate) (*pb
 	now := time.Now()
 	s.state.updateWorkerLocked(in.GetWorkerId(), 0, now)
 	task, estimated := s.state.updateChunkProgressLocked(in.GetChunkId(), in.GetProcessed(), now)
+	var taskID string
+	var totalKeyspace int64
 	if task != nil {
-		logTaskProgress(task, estimated)
+		taskID = task.ID
+		totalKeyspace = task.TotalKeyspace
 	}
 	s.state.mu.Unlock()
+	if s.ui != nil && taskID != "" {
+		s.ui.UpdateProgress(taskID, in.GetChunkId(), estimated, totalKeyspace)
+	}
 	return &pb.Ack{Received: true}, nil
 }
 
@@ -110,25 +119,57 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 	s.state.mu.Lock()
 	defer s.state.mu.Unlock()
 
-	s.state.updateWorkerLocked(in.WorkerId, 0, time.Now())
+	now := time.Now()
+	s.state.updateWorkerLocked(in.WorkerId, 0, now)
 	lease, ok := s.state.activeChunks[in.TaskId]
-	if ok {
-		delete(s.state.activeChunks, in.TaskId)
-		delete(s.state.chunkProgress, in.TaskId)
-		task := s.state.tasks[lease.taskID]
-		if task != nil && !task.isTerminal() {
-			now := time.Now()
-			if in.ErrorMessage != "" {
-				task.Status = TaskStatusFailed
-				task.FailureReason = in.ErrorMessage
-				task.Attempts++
-				task.DispatchReady = false
-				task.UpdatedAt = now
-				s.state.clearTaskLeasesLocked(task.ID)
-				log.Printf("Task %s failed by %s: %s", task.ID, in.WorkerId, in.ErrorMessage)
-				return &pb.Ack{Received: true}, nil
-			}
+	if !ok {
+		return &pb.Ack{Received: true}, nil
+	}
 
+	delete(s.state.activeChunks, in.TaskId)
+	delete(s.state.chunkProgress, in.TaskId)
+
+	task := s.state.tasks[lease.taskID]
+	processed := in.GetProcessed()
+	total := in.GetTotal()
+	duration := time.Duration(in.GetDurationMs()) * time.Millisecond
+	avgRate := in.GetAvgRate()
+	if processed <= 0 {
+		processed = lease.end - lease.start
+	}
+	if total <= 0 {
+		total = lease.end - lease.start
+	}
+	if duration <= 0 {
+		duration = now.Sub(lease.assignedAt)
+	}
+	if avgRate <= 0 && processed > 0 && duration > 0 {
+		avgRate = float64(processed) / duration.Seconds()
+	}
+
+	info := s.state.workers[in.WorkerId]
+	if info != nil {
+		info.TotalProcessed += processed
+		info.TotalDuration += duration
+		info.CompletedChunks++
+		info.LastChunkID = in.TaskId
+		info.LastChunkRate = avgRate
+		info.LastChunkDuration = duration
+		if task != nil {
+			info.LastTaskID = task.ID
+		}
+	}
+
+	if task != nil && !task.isTerminal() {
+		if in.ErrorMessage != "" {
+			task.Status = TaskStatusFailed
+			task.FailureReason = in.ErrorMessage
+			task.Attempts++
+			task.DispatchReady = false
+			task.UpdatedAt = now
+			s.state.clearTaskLeasesLocked(task.ID)
+			logError("Task %s failed by %s: %s", task.ID, in.WorkerId, in.ErrorMessage)
+		} else {
 			task.Completed += lease.end - lease.start
 			if task.Completed > task.TotalKeyspace {
 				task.Completed = task.TotalKeyspace
@@ -141,18 +182,31 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 				task.Status = TaskStatusCompleted
 				task.Completed = task.TotalKeyspace
 				task.DispatchReady = false
-				log.Printf("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
+				logSuccess("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
 			} else {
-				log.Printf("Chunk %s completed by %s with no match (%d-%d)", in.TaskId, in.WorkerId, lease.start, lease.end)
+				logInfo("Chunk %s completed by %s with no match (%d-%d)", in.TaskId, in.WorkerId, lease.start, lease.end)
 				if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
 					task.Status = TaskStatusCompleted
 					task.DispatchReady = false
-					log.Printf("Task %s exhausted with no password found.", task.ID)
+					logWarn("Task %s exhausted with no password found.", task.ID)
 				}
 			}
-			s.state.updateWorkerRateLocked(in.WorkerId, lease.end-lease.start, now.Sub(lease.assignedAt))
-			logTaskProgress(task, task.Completed)
 		}
+		if s.ui != nil {
+			s.ui.UpdateProgress(task.ID, in.TaskId, task.Completed, task.TotalKeyspace)
+		}
+	}
+
+	if processed > 0 && duration > 0 {
+		s.state.updateWorkerRateLocked(in.WorkerId, processed, duration)
+	}
+
+	if info != nil && info.CompletedChunks > 0 {
+		totalAvg := 0.0
+		if info.TotalDuration > 0 && info.TotalProcessed > 0 {
+			totalAvg = float64(info.TotalProcessed) / info.TotalDuration.Seconds()
+		}
+		logInfo("Worker %s summary: chunks=%d processed=%d duration=%s avg=%s total_avg=%s", info.ID, info.CompletedChunks, info.TotalProcessed, formatDuration(info.TotalDuration), console.FormatHashRate(avgRate), console.FormatHashRate(totalAvg))
 	}
 
 	return &pb.Ack{Received: true}, nil
@@ -165,9 +219,21 @@ func runServer() error {
 	}
 
 	state := newMasterState()
+	renderer := console.NewStickyRenderer(os.Stdout)
+	log.SetOutput(renderer)
+	ui := newMasterUI(state)
+	renderLoop := console.NewRenderLoop(renderer, masterRenderInterval, ui.StatusLine)
+	renderLoop.Start()
+	defer renderLoop.Stop()
+
+	monitor := newWorkerMonitor(state)
+	monitor.Start()
+	defer monitor.Stop()
+
 	s := grpc.NewServer()
 	srv := &server{
 		state: state,
+		ui:    ui,
 	}
 	admin := &adminServer{
 		state: state,
@@ -175,8 +241,8 @@ func runServer() error {
 
 	pb.RegisterCrackerServiceServer(s, srv)
 	pb.RegisterCrackerAdminServer(s, admin)
-	log.Printf("Master Hash Cracker running on port %s", Port)
-	log.Printf("Ready for Workers...")
+	logInfo("Master Hash Cracker running on port %s", Port)
+	logInfo("Ready for Workers...")
 
 	if err := s.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve: %w", err)

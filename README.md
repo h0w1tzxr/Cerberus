@@ -12,7 +12,7 @@ Cerberus adalah demo distributed hash cracking berbasis gRPC dengan arsitektur M
 
 ## Prasyarat
 
-- Go 1.22+
+- Go 1.24+
 - Port `50051` harus terbuka antara Master dan Worker.
 - Jika memakai wordlist, path file harus valid di Master (saat add task) dan Worker (saat eksekusi).
 
@@ -163,6 +163,10 @@ Action dan efek:
 ## Admin CLI - Referensi Lengkap
 
 Semua perintah dijalankan lewat `go run ./Master ...`. Binary yang sama akan bertindak sebagai CLI bila ada argumen.
+
+## Inline Status (CLI)
+
+TUI fullscreen dihapus. Master dan Worker kini menampilkan status line yang menempel di bawah terminal, sementara log tetap scroll normal. Gunakan perintah CLI biasa untuk monitoring.
 
 ### Global flags
 

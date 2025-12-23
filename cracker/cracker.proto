@@ -82,6 +82,10 @@ message CrackResult {
   string found_password = 3;
   string worker_id = 4;
   string error_message = 5;
+  int64 processed = 6;
+  int64 total = 7;
+  int64 duration_ms = 8;
+  double avg_rate = 9;
 }
 
 message ProgressUpdate {

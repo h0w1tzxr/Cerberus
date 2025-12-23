@@ -2,7 +2,6 @@ package master
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +34,7 @@ func logTaskProgress(task *Task, completed int64) {
 	if completed > task.TotalKeyspace {
 		completed = task.TotalKeyspace
 	}
-	log.Printf("Task %s progress %s", task.ID, formatProgressBar(completed, task.TotalKeyspace, masterProgressBarWidth))
+	logInfo("Task %s progress %s", task.ID, formatProgressBar(completed, task.TotalKeyspace, masterProgressBarWidth))
 }
 
 func (t *taskProgressTracker) shouldLog(taskID string, now time.Time) bool {
