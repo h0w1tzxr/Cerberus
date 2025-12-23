@@ -107,6 +107,7 @@ message TaskSpec {
   int64 keyspace = 5;
   int32 priority = 6;
   int32 max_retries = 7;
+  string output_path = 8;
 }
 
 message TaskBatchSpec {
@@ -117,6 +118,7 @@ message TaskBatchSpec {
   int64 keyspace = 5;
   int32 priority = 6;
   int32 max_retries = 7;
+  string output_path = 8;
 }
 
 message TaskActionRequest {

@@ -41,7 +41,11 @@ type masterState struct {
 	dispatchPaused bool
 	nextTaskSeq    int64
 	nextQueueSeq   int64
+	nextChunkSeq   int64
+	nextBatchSeq   int64
+	leaderboardLogged bool
 	wordlists      *wordlist.Cache
+	batchOutputs   map[string]*batchOutput
 }
 
 func newMasterState() *masterState {
@@ -52,12 +56,13 @@ func newMasterState() *masterState {
 		chunkProgress: make(map[string]int64),
 		workers:       make(map[string]*workerInfo),
 		wordlists:     wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes),
+		batchOutputs:  make(map[string]*batchOutput),
 	}
 	heap.Init(&state.queue)
 	return state
 }
 
-func (s *masterState) addTask(hash string, mode HashMode, wordlistPath string, chunkSize, totalKeyspace int64, priority, maxRetries int) *Task {
+func (s *masterState) addTask(hash string, mode HashMode, wordlistPath, outputPath, batchID string, batchIndex, batchTotal int, chunkSize, totalKeyspace int64, priority, maxRetries int) *Task {
 	s.nextTaskSeq++
 	now := time.Now()
 	taskID := fmt.Sprintf("task-%d", s.nextTaskSeq)
@@ -72,11 +77,15 @@ func (s *masterState) addTask(hash string, mode HashMode, wordlistPath string, c
 		Hash:          hash,
 		Mode:          mode,
 		WordlistPath:  wordlistPath,
+		OutputPath:    outputPath,
 		Status:        TaskStatusApproved,
 		Priority:      priority,
 		ChunkSize:     chunkSize,
 		TotalKeyspace: totalKeyspace,
 		MaxRetries:    maxRetries,
+		BatchID:       batchID,
+		BatchIndex:    batchIndex,
+		BatchTotal:    batchTotal,
 		ReviewedBy:    "auto",
 		ApprovedBy:    "auto",
 		DispatchReady: true,
@@ -84,6 +93,7 @@ func (s *masterState) addTask(hash string, mode HashMode, wordlistPath string, c
 		UpdatedAt:     now,
 	}
 	s.tasks[taskID] = task
+	s.leaderboardLogged = false
 	if task.isDispatchable() {
 		s.enqueueTaskLocked(task)
 	}
@@ -120,6 +130,9 @@ func (s *masterState) nextDispatchableTaskLocked(now time.Time) *Task {
 			if task.Completed >= task.TotalKeyspace && !s.hasActiveChunksLocked(task.ID) {
 				task.Status = TaskStatusCompleted
 				task.UpdatedAt = now
+				if task.CompletedAt.IsZero() {
+					task.CompletedAt = now
+				}
 			}
 			continue
 		}
@@ -129,7 +142,8 @@ func (s *masterState) nextDispatchableTaskLocked(now time.Time) *Task {
 }
 
 func (s *masterState) assignChunkLocked(task *Task, start, end int64, workerID string, now time.Time) *pb.TaskChunk {
-	chunkID := fmt.Sprintf("chunk-%s-%d", workerID, now.UnixNano())
+	s.nextChunkSeq++
+	chunkID := fmt.Sprintf("chunk-%s-%d", workerID, s.nextChunkSeq)
 	s.activeChunks[chunkID] = taskLease{
 		start:          start,
 		end:            end,

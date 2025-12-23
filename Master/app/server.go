@@ -64,6 +64,9 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 			if task.Status == TaskStatusApproved {
 				task.Status = TaskStatusRunning
 				taskStarted = true
+				if task.StartedAt.IsZero() {
+					task.StartedAt = now
+				}
 			}
 			task.UpdatedAt = now
 
@@ -78,23 +81,8 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 			return chunk, nil
 		}
 
-		if !s.state.allTasksTerminalLocked() {
-			s.state.mu.Unlock()
-			return &pb.TaskChunk{DispatchPaused: true}, nil
-		}
-
-		if len(s.state.activeChunks) == 0 && s.state.allTasksTerminalLocked() {
-			s.state.mu.Unlock()
-			return &pb.TaskChunk{NoMoreWork: true}, nil
-		}
-
 		s.state.mu.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
+		return &pb.TaskChunk{NoMoreWork: true}, nil
 	}
 }
 
@@ -125,11 +113,14 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 	}
 	now := time.Now()
 	var (
-		taskEnded     bool
-		terminalMsg   string
-		terminalLevel uiEventLevel
-		leaderboard   []leaderboardEntry
-		terminalTask  string
+		taskEnded         bool
+		terminalMsg       string
+		terminalLevel     uiEventLevel
+		leaderboard       []leaderboardEntry
+		terminalTask      string
+		durationLabel     string
+		taskDurationValue time.Duration
+		outputWrite       *outputWrite
 	)
 
 	s.state.mu.Lock()
@@ -186,10 +177,15 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			task.Attempts++
 			task.DispatchReady = false
 			task.UpdatedAt = now
+			if task.CompletedAt.IsZero() {
+				task.CompletedAt = now
+			}
 			s.state.clearTaskLeasesLocked(task.ID)
 			taskEnded = true
 			terminalLevel = uiEventError
-			terminalMsg = fmt.Sprintf("Task %s failed by %s: %s", task.ID, in.WorkerId, in.ErrorMessage)
+			taskDurationValue = taskDuration(task, now)
+			durationLabel = formatDuration(taskDurationValue)
+			terminalMsg = fmt.Sprintf("Task %s failed by %s: %s (duration=%s)", task.ID, in.WorkerId, in.ErrorMessage, durationLabel)
 		} else {
 			task.Completed += lease.end - lease.start
 			if task.Completed > task.TotalKeyspace {
@@ -203,16 +199,28 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 				task.Status = TaskStatusCompleted
 				task.Completed = task.TotalKeyspace
 				task.DispatchReady = false
+				task.PendingRanges = nil
+				s.state.clearTaskLeasesLocked(task.ID)
 				taskEnded = true
 				terminalLevel = uiEventSuccess
-				terminalMsg = fmt.Sprintf("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
+				if task.CompletedAt.IsZero() {
+					task.CompletedAt = now
+				}
+				taskDurationValue = taskDuration(task, now)
+				durationLabel = formatDuration(taskDurationValue)
+				terminalMsg = fmt.Sprintf("Password found by %s for task %s: %s (duration=%s)", in.WorkerId, task.ID, in.FoundPassword, durationLabel)
 			} else {
 				if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
 					task.Status = TaskStatusCompleted
 					task.DispatchReady = false
 					taskEnded = true
 					terminalLevel = uiEventWarn
-					terminalMsg = fmt.Sprintf("Task %s exhausted with no password found.", task.ID)
+					if task.CompletedAt.IsZero() {
+						task.CompletedAt = now
+					}
+					taskDurationValue = taskDuration(task, now)
+					durationLabel = formatDuration(taskDurationValue)
+					terminalMsg = fmt.Sprintf("Task %s exhausted with no password found. (duration=%s)", task.ID, durationLabel)
 				}
 			}
 		}
@@ -221,7 +229,16 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 		}
 		if taskEnded {
 			terminalTask = task.ID
-			leaderboard = snapshotLeaderboardLocked(s.state)
+			if info != nil {
+				info.CompletedTasks++
+				info.TotalTaskDuration += taskDurationValue
+				info.LastTaskDuration = taskDurationValue
+			}
+			outputWrite = s.state.recordTaskOutputLocked(task)
+			if !s.state.leaderboardLogged && s.state.allTasksTerminalLocked() && len(s.state.activeChunks) == 0 {
+				leaderboard = snapshotLeaderboardLocked(s.state)
+				s.state.leaderboardLogged = true
+			}
 		}
 	}
 
@@ -229,6 +246,12 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 		s.state.updateWorkerRateLocked(in.WorkerId, processed, duration)
 	}
 	s.state.mu.Unlock()
+
+	if outputWrite != nil {
+		if err := outputWrite.write(); err != nil {
+			logWarn("Output write failed: %v", err)
+		}
+	}
 
 	if taskEnded {
 		switch terminalLevel {
@@ -252,7 +275,7 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 	return &pb.Ack{Received: true}, nil
 }
 
-func runServer() error {
+func runServer(interactive bool) error {
 	lis, err := net.Listen("tcp", Port)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -284,7 +307,14 @@ func runServer() error {
 	logInfo("Master Hash Cracker running on port %s", Port)
 	logInfo("Ready for Workers...")
 
+	if interactive {
+		startInteractiveConsole(s, renderLoop, renderer, ui.StatusLine)
+	}
+
 	if err := s.Serve(lis); err != nil {
+		if err == grpc.ErrServerStopped {
+			return nil
+		}
 		return fmt.Errorf("failed to serve: %w", err)
 	}
 	return nil

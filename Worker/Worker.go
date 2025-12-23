@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,12 +27,12 @@ const MasterAddress = "10.110.1.43:50051"
 var wordlistCache = wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes)
 
 const (
-	standbyDelay        = 2 * time.Second
-	maxStandbyDelay     = 12 * time.Second
-	maxErrorDelay       = 15 * time.Second
-	progressLogInterval = 2 * time.Second
+	standbyDelay        = 500 * time.Millisecond
+	maxStandbyDelay     = 4 * time.Second
+	maxErrorDelay       = 10 * time.Second
+	progressLogInterval = 750 * time.Millisecond
 	progressReportEvery = int64(200)
-	getTaskTimeout      = 4 * time.Second
+	getTaskTimeout      = 3 * time.Second
 	renderInterval      = time.Second / 30
 )
 
@@ -43,6 +44,7 @@ func main() {
 	workerID := "worker-" + hostname // Atau gunakan UUID random
 
 	cpuCores := int32(runtime.NumCPU())
+	runtime.GOMAXPROCS(int(cpuCores))
 	slotCount := int(cpuCores)
 	if slotCount < 1 {
 		slotCount = 1
@@ -207,10 +209,11 @@ func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *worker
 		}
 		telemetry.FinishChunk(slotID, stats.processed, stats.total)
 
+		rangeLabel := formatRange(task.StartIndex, task.EndIndex)
 		if errMsg != "" {
-			telemetry.RecordEvent(workerEventError, fmt.Sprintf("chunk %d-%d failed: %s", task.StartIndex, task.EndIndex, errMsg))
+			telemetry.RecordEvent(workerEventError, fmt.Sprintf("chunk %s failed: %s", rangeLabel, errMsg))
 		} else if found {
-			msg := fmt.Sprintf("password found for chunk %d-%d: %s", task.StartIndex, task.EndIndex, passwd)
+			msg := fmt.Sprintf("password found for chunk %s: %s", rangeLabel, passwd)
 			telemetry.RecordEvent(workerEventSuccess, msg)
 			logSuccess("Password found by %s: %s", workerID, passwd)
 		}
@@ -236,6 +239,7 @@ func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *worker
 			time.Sleep(standbyDelay)
 		}
 
+		telemetry.SetSlotState(slotID, "fetching")
 		res := <-prefetchCh
 		prefetched = res.task
 		prefetchedErr = res.err
@@ -256,10 +260,11 @@ type chunkStats struct {
 }
 
 func processTask(task *pb.TaskChunk, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
+	targetHash := strings.ToLower(strings.TrimSpace(task.TargetHash))
 	if task.WordlistPath != "" {
-		return bruteForceWordlist(task.WordlistPath, task.StartIndex, task.EndIndex, task.TargetHash, normalizeMode(task.Mode), onProgress)
+		return bruteForceWordlist(task.WordlistPath, task.StartIndex, task.EndIndex, targetHash, normalizeMode(task.Mode), onProgress)
 	}
-	return bruteForceRange(task.StartIndex, task.EndIndex, task.TotalKeyspace, task.TargetHash, normalizeMode(task.Mode), onProgress)
+	return bruteForceRange(task.StartIndex, task.EndIndex, task.TotalKeyspace, targetHash, normalizeMode(task.Mode), onProgress)
 }
 
 func bruteForceWordlist(path string, start, end int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
@@ -277,11 +282,12 @@ func bruteForceWordlist(path string, start, end int64, targetHash string, mode p
 	var password string
 	total := end - start
 	var processed int64
+	reportEvery := reportEveryForTotal(total)
 	reporter := newProgressReporter(fmt.Sprintf("Chunk %d-%d", start, end), total, progressLogInterval, onProgress)
 	started := time.Now()
 	err = reader.ReadRange(start, end, func(line string, lineNumber int64) error {
 		processed = lineNumber - start + 1
-		if processed%progressReportEvery == 0 || processed == total {
+		if processed%reportEvery == 0 || processed == total {
 			reporter.MaybeLog(processed)
 		}
 		if hashCandidate(mode, line) == targetHash {
@@ -311,18 +317,20 @@ func bruteForceRange(start, end, totalKeyspace int64, targetHash string, mode pb
 		}
 	}
 	total := end - start
+	reportEvery := reportEveryForTotal(total)
 	reporter := newProgressReporter(fmt.Sprintf("Chunk %d-%d", start, end), total, progressLogInterval, onProgress)
 	started := time.Now()
 	var processed int64
+	buf := make([]byte, width)
 	for i := start; i < end; i++ {
-		candidate := fmt.Sprintf("%0*d", width, i)
-		if hashCandidate(mode, candidate) == targetHash {
+		formatCandidate(buf, width, i)
+		if hashCandidateBytes(mode, buf) == targetHash {
 			reporter.LogNow(i - start + 1)
 			processed = i - start + 1
-			return true, candidate, "", chunkStats{processed: processed, total: total, duration: time.Since(started)}
+			return true, string(buf), "", chunkStats{processed: processed, total: total, duration: time.Since(started)}
 		}
 		processed = i - start + 1
-		if processed%progressReportEvery == 0 || i+1 == end {
+		if processed%reportEvery == 0 || i+1 == end {
 			reporter.MaybeLog(processed)
 		}
 	}
@@ -337,6 +345,17 @@ func hashCandidate(mode pb.HashMode, candidate string) string {
 		return hex.EncodeToString(hash[:])
 	default:
 		hash := md5.Sum([]byte(candidate))
+		return hex.EncodeToString(hash[:])
+	}
+}
+
+func hashCandidateBytes(mode pb.HashMode, candidate []byte) string {
+	switch normalizeMode(mode) {
+	case pb.HashMode_HASH_MODE_SHA256:
+		hash := sha256.Sum256(candidate)
+		return hex.EncodeToString(hash[:])
+	default:
+		hash := md5.Sum(candidate)
 		return hex.EncodeToString(hash[:])
 	}
 }
@@ -413,6 +432,33 @@ func nextDelay(current, max time.Duration) time.Duration {
 	return next
 }
 
+func reportEveryForTotal(total int64) int64 {
+	reportEvery := progressReportEvery
+	if total > 0 {
+		step := total / 100
+		if step > reportEvery {
+			reportEvery = step
+		}
+	}
+	if reportEvery < 1 {
+		return 1
+	}
+	return reportEvery
+}
+
+func formatCandidate(buf []byte, width int, value int64) {
+	if width <= 0 {
+		width = 1
+	}
+	if len(buf) < width {
+		return
+	}
+	for i := width - 1; i >= 0; i-- {
+		buf[i] = byte('0' + value%10)
+		value /= 10
+	}
+}
+
 func registerWorker(client pb.CrackerServiceClient, workerID string, cpuCores int32) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -463,4 +509,11 @@ func reportResult(client pb.CrackerServiceClient, result *pb.CrackResult) error 
 		}
 	}
 	return nil
+}
+
+func formatRange(start, end int64) string {
+	if end <= start {
+		return fmt.Sprintf("%d-%d", start, start)
+	}
+	return fmt.Sprintf("%d-%d", start, end-1)
 }

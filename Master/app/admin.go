@@ -22,7 +22,7 @@ func (a *adminServer) AddTask(ctx context.Context, spec *pb.TaskSpec) (*pb.Task,
 	if spec == nil {
 		return nil, status.Error(codes.InvalidArgument, "task spec is required")
 	}
-	hash := strings.TrimSpace(spec.Hash)
+	hash := normalizeHash(spec.Hash)
 	if hash == "" {
 		return nil, status.Error(codes.InvalidArgument, "hash is required")
 	}
@@ -32,6 +32,7 @@ func (a *adminServer) AddTask(ctx context.Context, spec *pb.TaskSpec) (*pb.Task,
 	}
 
 	wordlistPath := strings.TrimSpace(spec.WordlistPath)
+	outputPath := strings.TrimSpace(spec.OutputPath)
 	totalKeyspace := spec.Keyspace
 	if wordlistPath != "" {
 		index, err := a.state.wordlists.Get(wordlistPath)
@@ -52,7 +53,14 @@ func (a *adminServer) AddTask(ctx context.Context, spec *pb.TaskSpec) (*pb.Task,
 	maxRetries := int(spec.MaxRetries)
 
 	a.state.mu.Lock()
-	task := a.state.addTask(hash, mode, wordlistPath, chunkSize, totalKeyspace, priority, maxRetries)
+	batchID := ""
+	batchTotal := 0
+	if outputPath != "" {
+		batchID = a.state.newBatchIDLocked()
+		batchTotal = 1
+		a.state.ensureBatchOutputLocked(batchID, outputPath, batchTotal)
+	}
+	task := a.state.addTask(hash, mode, wordlistPath, outputPath, batchID, 0, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
 	a.state.mu.Unlock()
 
 	return taskToProto(task), nil
@@ -71,6 +79,7 @@ func (a *adminServer) AddTaskBatch(ctx context.Context, spec *pb.TaskBatchSpec) 
 	}
 
 	wordlistPath := strings.TrimSpace(spec.WordlistPath)
+	outputPath := strings.TrimSpace(spec.OutputPath)
 	totalKeyspace := spec.Keyspace
 	if wordlistPath != "" {
 		index, err := a.state.wordlists.Get(wordlistPath)
@@ -91,13 +100,24 @@ func (a *adminServer) AddTaskBatch(ctx context.Context, spec *pb.TaskBatchSpec) 
 	maxRetries := int(spec.MaxRetries)
 
 	a.state.mu.Lock()
-	tasks := make([]*pb.Task, 0, len(spec.Hashes))
+	validHashes := make([]string, 0, len(spec.Hashes))
 	for _, hash := range spec.Hashes {
-		hash = strings.TrimSpace(hash)
+		hash = normalizeHash(hash)
 		if hash == "" {
 			continue
 		}
-		task := a.state.addTask(hash, mode, wordlistPath, chunkSize, totalKeyspace, priority, maxRetries)
+		validHashes = append(validHashes, hash)
+	}
+	tasks := make([]*pb.Task, 0, len(validHashes))
+	batchID := ""
+	batchTotal := 0
+	if outputPath != "" && len(validHashes) > 0 {
+		batchID = a.state.newBatchIDLocked()
+		batchTotal = len(validHashes)
+		a.state.ensureBatchOutputLocked(batchID, outputPath, batchTotal)
+	}
+	for i, hash := range validHashes {
+		task := a.state.addTask(hash, mode, wordlistPath, outputPath, batchID, i, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
 		tasks = append(tasks, taskToProto(task))
 	}
 	a.state.mu.Unlock()
@@ -123,9 +143,15 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		logMsg      string
 		logTaskID   string
 		leaderboard []leaderboardEntry
+		outputWrite *outputWrite
 	)
 	defer func() {
 		a.state.mu.Unlock()
+		if outputWrite != nil {
+			if err := outputWrite.write(); err != nil {
+				logWarn("Output write failed: %v", err)
+			}
+		}
 		if logMsg != "" {
 			logWarn("%s", logMsg)
 			if len(leaderboard) > 0 {
@@ -173,10 +199,17 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		task.FailureReason = strings.TrimSpace(req.Reason)
 		task.PendingRanges = nil
 		task.UpdatedAt = now
+		if task.CompletedAt.IsZero() {
+			task.CompletedAt = now
+		}
 		a.state.clearTaskLeasesLocked(task.ID)
+		outputWrite = a.state.recordTaskOutputLocked(task)
 		logMsg = fmt.Sprintf("Task %s canceled by %s", task.ID, operator)
 		logTaskID = task.ID
-		leaderboard = snapshotLeaderboardLocked(a.state)
+		if !a.state.leaderboardLogged && a.state.allTasksTerminalLocked() && len(a.state.activeChunks) == 0 {
+			leaderboard = snapshotLeaderboardLocked(a.state)
+			a.state.leaderboardLogged = true
+		}
 	case pb.TaskAction_TASK_ACTION_RETRY:
 		if task.Status != TaskStatusFailed {
 			return nil, status.Errorf(codes.FailedPrecondition, "task %s is not failed", task.ID)
@@ -194,6 +227,9 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		task.NextIndex = 0
 		task.PendingRanges = nil
 		task.UpdatedAt = now
+		task.StartedAt = time.Time{}
+		task.CompletedAt = time.Time{}
+		a.state.leaderboardLogged = false
 	case pb.TaskAction_TASK_ACTION_PAUSE:
 		if task.isTerminal() {
 			return nil, status.Errorf(codes.FailedPrecondition, "task %s is already terminal", task.ID)

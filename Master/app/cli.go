@@ -182,6 +182,8 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out i
 	hash := fs.String("hash", "", "target hash")
 	mode := fs.String("mode", "", "hash mode (md5|sha256)")
 	wordlist := fs.String("wordlist", "", "path to wordlist")
+	output := fs.String("output", "", "output file (one line per hash)")
+	outputShort := fs.String("o", "", "output file (one line per hash)")
 	chunk := fs.Int64("chunk", DefaultChunkSize, "chunk size")
 	keyspace := fs.Int64("keyspace", DefaultKeyspace, "total keyspace size (ignored for wordlist)")
 	priority := fs.Int("priority", 0, "priority (higher is sooner)")
@@ -197,6 +199,10 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out i
 	if err != nil {
 		return err
 	}
+	outputPath := strings.TrimSpace(*output)
+	if outputPath == "" {
+		outputPath = strings.TrimSpace(*outputShort)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
 	defer cancel()
@@ -204,6 +210,7 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out i
 		Hash:         *hash,
 		Mode:         modeProto,
 		WordlistPath: strings.TrimSpace(*wordlist),
+		OutputPath:   outputPath,
 		ChunkSize:    *chunk,
 		Keyspace:     *keyspace,
 		Priority:     int32(*priority),
@@ -222,6 +229,8 @@ func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string, 
 	useStdin := fs.Bool("stdin", false, "read hashes from stdin")
 	mode := fs.String("mode", "", "hash mode (md5|sha256)")
 	wordlist := fs.String("wordlist", "", "path to wordlist")
+	output := fs.String("output", "", "output file (one line per hash)")
+	outputShort := fs.String("o", "", "output file (one line per hash)")
 	chunk := fs.Int64("chunk", DefaultChunkSize, "chunk size")
 	keyspace := fs.Int64("keyspace", DefaultKeyspace, "total keyspace size (ignored for wordlist)")
 	priority := fs.Int("priority", 0, "priority (higher is sooner)")
@@ -238,6 +247,10 @@ func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string, 
 	if err != nil {
 		return err
 	}
+	outputPath := strings.TrimSpace(*output)
+	if outputPath == "" {
+		outputPath = strings.TrimSpace(*outputShort)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
 	defer cancel()
@@ -245,6 +258,7 @@ func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string, 
 		Hashes:       hashes,
 		Mode:         modeProto,
 		WordlistPath: strings.TrimSpace(*wordlist),
+		OutputPath:   outputPath,
 		ChunkSize:    *chunk,
 		Keyspace:     *keyspace,
 		Priority:     int32(*priority),

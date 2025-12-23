@@ -14,8 +14,16 @@ import (
 const masterRenderInterval = time.Second / 30
 
 const (
-	dashboardProgressBarWidth = 18
+	dashboardProgressBarWidth = 12
 	workerStallAfter          = 6 * time.Second
+	masterMaxWorkersDisplay   = 12
+	masterWorkerIDWidth       = 10
+	masterHealthWidth         = 5
+	masterCoresWidth          = 5
+	masterActiveWidth         = 6
+	masterTaskWidth           = 10
+	masterRangeWidth          = 11
+	masterRateWidth           = 9
 )
 
 type uiEventLevel int
@@ -106,22 +114,31 @@ func (ui *masterUI) StatusLine() string {
 		ui.state.mu.Unlock()
 	}
 
-	header := fmt.Sprintf("%s master | rate=%s | task=%s | chunk=%s | progress=%s | workers=%d | active=%d | dispatch=%s", console.TagInfo(), console.FormatHashRate(totalRate), taskID, chunkID, percent, workerCount, activeWorkers, dispatchLabel(dispatchPaused))
+	headerTop := fmt.Sprintf("%s master | rate=%s | task=%s | progress=%s", console.TagInfo(), console.FormatHashRate(totalRate), taskID, percent)
+	chunkLabel := formatChunkHeader(chunkID)
+	headerBottom := fmt.Sprintf("chunk=%s | workers=%d | active=%d | dispatch=%s", chunkLabel, workerCount, activeWorkers, dispatchLabel(dispatchPaused))
 
-	lines := []string{header, separatorLine()}
-	lines = append(lines, console.ColorInfo("WORKERS"))
+	lines := []string{headerTop, headerBottom, separatorLine(), workerHeaderLine()}
 	if len(snapshots) == 0 {
-		lines = append(lines, "-")
+		lines = append(lines, console.ColorMuted("no workers"))
 	} else {
 		sort.Slice(snapshots, func(i, j int) bool {
 			return snapshots[i].lastSeen.After(snapshots[j].lastSeen)
 		})
-		for _, snapshot := range snapshots {
-			lines = append(lines, snapshotLines(snapshot, now)...)
+		display := snapshots
+		hidden := 0
+		if len(display) > masterMaxWorkersDisplay {
+			hidden = len(display) - masterMaxWorkersDisplay
+			display = display[:masterMaxWorkersDisplay]
+		}
+		for _, snapshot := range display {
+			lines = append(lines, snapshotLine(snapshot, now))
+		}
+		if hidden > 0 {
+			lines = append(lines, console.ColorMuted(fmt.Sprintf("hidden: %d worker(s)", hidden)))
 		}
 	}
-	lines = append(lines, separatorLine())
-	lines = append(lines, ui.eventLine())
+	lines = append(lines, separatorLine(), ui.eventLine())
 	return strings.Join(lines, "\n")
 }
 
@@ -133,7 +150,7 @@ func dispatchLabel(paused bool) string {
 }
 
 func separatorLine() string {
-	return strings.Repeat("-", 90)
+	return console.SeparatorLine()
 }
 
 type workerSnapshot struct {
@@ -196,8 +213,23 @@ func snapshotWorkersLocked(state *masterState, now time.Time) []workerSnapshot {
 	return snapshots
 }
 
-func snapshotLines(snapshot workerSnapshot, now time.Time) []string {
-	healthLabel := colorHealth(snapshot.health)
+func workerHeaderLine() string {
+	progressWidth := dashboardProgressBarWidth + 10
+	return console.ColorInfo(fmt.Sprintf("%-*s %-*s %-*s %-*s %-*s %-*s %-*s %*s %*s",
+		masterWorkerIDWidth, "WORKER",
+		masterHealthWidth, "HLTH",
+		masterCoresWidth, "CORES",
+		masterActiveWidth, "ACTIVE",
+		masterTaskWidth, "TASK",
+		masterRangeWidth, "RANGE",
+		progressWidth, "PROGRESS",
+		masterRateWidth, "AVG",
+		masterRateWidth, "LAST",
+	))
+}
+
+func snapshotLine(snapshot workerSnapshot, now time.Time) string {
+	healthLabel := healthLabel(snapshot.health)
 	taskLabel := snapshot.activeTaskID
 	if taskLabel == "" {
 		taskLabel = snapshot.lastTaskID
@@ -205,13 +237,13 @@ func snapshotLines(snapshot workerSnapshot, now time.Time) []string {
 	if taskLabel == "" {
 		taskLabel = "-"
 	}
-	assignment := "idle"
+	taskLabel = padRight(shortLabel(taskLabel, masterTaskWidth), masterTaskWidth)
+
+	rangeLabel := "-"
 	if snapshot.activeChunks > 0 {
-		assignment = fmt.Sprintf("task=%s range=%d-%d", taskLabel, snapshot.activeStart, snapshot.activeEnd)
-	} else {
-		assignment = fmt.Sprintf("task=%s idle", taskLabel)
+		rangeLabel = formatRange(snapshot.activeStart, snapshot.activeEnd)
 	}
-	line1 := fmt.Sprintf("%s %s cores=%d active=%d %s", snapshot.id, healthLabel, snapshot.cpuCores, snapshot.activeChunks, assignment)
+	rangeLabel = padRight(shortLabel(rangeLabel, masterRangeWidth), masterRangeWidth)
 
 	barProcessed := snapshot.activeProcessed
 	barTotal := snapshot.activeTotal
@@ -229,24 +261,46 @@ func snapshotLines(snapshot workerSnapshot, now time.Time) []string {
 		barProcessed = 0
 	}
 
-	bar := console.FormatProgressBar(barProcessed, barTotal, dashboardProgressBarWidth, state)
-	rateLabel := console.FormatHashRate(snapshot.avgRate)
+	progressWidth := dashboardProgressBarWidth + 10
+	bar := padRight("-", progressWidth)
+	if snapshot.activeChunks > 0 {
+		bar = console.FormatProgressBar(barProcessed, barTotal, dashboardProgressBarWidth, state)
+	}
+	rateLabel := padLeft(console.FormatHashRate(snapshot.avgRate), masterRateWidth)
 	lastLabel := "-"
 	if snapshot.lastChunkRate > 0 {
 		lastLabel = console.FormatHashRate(snapshot.lastChunkRate)
 	}
-	line2 := fmt.Sprintf("  %s rate=%s last=%s", bar, rateLabel, lastLabel)
-	return []string{line1, line2}
+	lastLabel = padLeft(lastLabel, masterRateWidth)
+
+	idLabel := padRight(shortLabel(snapshot.id, masterWorkerIDWidth), masterWorkerIDWidth)
+	coresLabel := padLeft(fmt.Sprintf("%d", snapshot.cpuCores), masterCoresWidth)
+	activeLabel := padLeft(fmt.Sprintf("%d", snapshot.activeChunks), masterActiveWidth)
+	return fmt.Sprintf("%s %s %s %s %s %s %s %s %s", idLabel, healthLabel, coresLabel, activeLabel, taskLabel, rangeLabel, bar, rateLabel, lastLabel)
 }
 
-func colorHealth(health string) string {
+func healthLabel(health string) string {
+	label := padRight(shortHealthLabel(health), masterHealthWidth)
 	switch health {
 	case "healthy":
-		return console.ColorSuccess(health)
+		return console.ColorSuccess(label)
 	case "stale":
-		return console.ColorWarn(health)
+		return console.ColorWarn(label)
 	default:
-		return console.ColorError(health)
+		return console.ColorError(label)
+	}
+}
+
+func shortHealthLabel(health string) string {
+	switch health {
+	case "healthy":
+		return "ok"
+	case "stale":
+		return "stale"
+	case "unknown":
+		return "unk"
+	default:
+		return health
 	}
 }
 
@@ -282,4 +336,68 @@ func formatDuration(duration time.Duration) string {
 	minutes := (totalSeconds % 3600) / 60
 	seconds := totalSeconds % 60
 	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+}
+
+func formatRange(start, end int64) string {
+	if end <= start {
+		return fmt.Sprintf("%d-%d", start, start)
+	}
+	return fmt.Sprintf("%d-%d", start, end-1)
+}
+
+func formatChunkHeader(chunkID string) string {
+	value := strings.TrimSpace(chunkID)
+	if value == "" || value == "-" {
+		return "-"
+	}
+	if suffix := chunkIDSuffix(value); suffix != "" {
+		return "#" + suffix
+	}
+	return shortLabel(value, masterTaskWidth)
+}
+
+func chunkIDSuffix(value string) string {
+	end := len(value)
+	start := end
+	for start > 0 {
+		ch := value[start-1]
+		if ch < '0' || ch > '9' {
+			break
+		}
+		start--
+	}
+	if start == end {
+		return ""
+	}
+	return value[start:end]
+}
+
+func shortLabel(value string, max int) string {
+	if max <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= max {
+		return value
+	}
+	return value[len(value)-max:]
+}
+
+func padRight(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
+}
+
+func padLeft(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	if len(value) >= width {
+		return value
+	}
+	return strings.Repeat(" ", width-len(value)) + value
 }

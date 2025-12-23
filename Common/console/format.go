@@ -67,6 +67,17 @@ func FormatProgressBar(processed, total int64, width int, state ProgressState) s
 	return fmt.Sprintf("[%s] %6.2f%%", bar, percent*100)
 }
 
+func SeparatorLine() string {
+	width, _ := TerminalSize()
+	if width <= 0 {
+		width = 72
+	}
+	if width > 1 {
+		width--
+	}
+	return strings.Repeat("-", width)
+}
+
 func progressColor(state ProgressState) string {
 	switch state {
 	case ProgressStateCompleted:

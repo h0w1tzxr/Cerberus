@@ -11,6 +11,9 @@ type workerInfo struct {
 	TotalDuration     time.Duration
 	TotalOverhead     time.Duration
 	CompletedChunks   int64
+	CompletedTasks    int64
+	TotalTaskDuration time.Duration
+	LastTaskDuration  time.Duration
 	LastChunkID       string
 	LastTaskID        string
 	LastChunkRate     float64

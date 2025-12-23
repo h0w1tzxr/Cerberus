@@ -1,12 +1,16 @@
 package console
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 type RenderLoop struct {
 	renderer *StickyRenderer
 	interval time.Duration
 	statusFn func() string
 	stopCh   chan struct{}
+	paused   atomic.Bool
 }
 
 func NewRenderLoop(renderer *StickyRenderer, interval time.Duration, statusFn func() string) *RenderLoop {
@@ -28,6 +32,9 @@ func (l *RenderLoop) Start() {
 		for {
 			select {
 			case <-ticker.C:
+				if l.paused.Load() {
+					continue
+				}
 				if l.statusFn != nil && l.renderer != nil {
 					l.renderer.SetStatus(l.statusFn())
 				}
@@ -51,4 +58,18 @@ func (l *RenderLoop) Stop() {
 		l.renderer.ClearStatus()
 		_ = l.renderer.Flush()
 	}
+}
+
+func (l *RenderLoop) Pause() {
+	if l == nil {
+		return
+	}
+	l.paused.Store(true)
+}
+
+func (l *RenderLoop) Resume() {
+	if l == nil {
+		return
+	}
+	l.paused.Store(false)
 }

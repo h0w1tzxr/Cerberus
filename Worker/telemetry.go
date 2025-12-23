@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -10,8 +11,13 @@ import (
 )
 
 const (
-	workerProgressBarWidth = 16
+	workerProgressBarWidth = 12
 	workerStallAfter       = 6 * time.Second
+	workerMaxSlotsDisplay  = 12
+	workerMaxIdleDisplay   = 4
+	workerStateWidth       = 7
+	workerChunkWidth       = 7
+	workerRateWidth        = 9
 )
 
 type workerEventLevel int
@@ -172,29 +178,105 @@ func (w *workerTelemetry) StatusLine() string {
 	event := w.event
 	w.mu.RUnlock()
 
-	header := fmt.Sprintf("%s worker=%s | master=%s | cores=%d | state=%s", console.TagInfo(), workerID, masterAddr, cores, colorState(globalState))
-	lines := []string{header, separatorLine(), console.ColorInfo("THREADS")}
-	if len(slots) == 0 {
-		lines = append(lines, "-")
+	activeSlots, idleSlots := splitSlots(slots)
+	displaySlots := activeSlots
+	hiddenActive := 0
+	hiddenIdle := 0
+	if len(displaySlots) > workerMaxSlotsDisplay {
+		hiddenActive = len(displaySlots) - workerMaxSlotsDisplay
+		displaySlots = displaySlots[:workerMaxSlotsDisplay]
+	}
+	if len(activeSlots) == 0 {
+		displaySlots = idleSlots
+		if len(displaySlots) > workerMaxIdleDisplay {
+			hiddenIdle = len(displaySlots) - workerMaxIdleDisplay
+			displaySlots = displaySlots[:workerMaxIdleDisplay]
+		}
 	} else {
-		for _, slot := range slots {
+		hiddenIdle = len(idleSlots)
+	}
+
+	header := fmt.Sprintf("%s worker %s | master %s", console.TagInfo(), workerID, masterAddr)
+	meta := fmt.Sprintf("state %s | cores %d | slots %d | active %d | idle %d", stateLabelCompact(globalState), cores, len(slots), len(activeSlots), len(idleSlots))
+	lines := []string{header, meta, separatorLine(), threadHeaderLine()}
+	if len(displaySlots) == 0 {
+		lines = append(lines, console.ColorMuted("no active threads"))
+	} else {
+		for _, slot := range displaySlots {
 			lines = append(lines, slotLine(slot, now))
 		}
 	}
-	lines = append(lines, separatorLine())
-	lines = append(lines, eventLine(event))
+	if hiddenActive > 0 || hiddenIdle > 0 {
+		lines = append(lines, hiddenSummaryLine(hiddenActive, hiddenIdle))
+	}
+	lines = append(lines, separatorLine(), eventLine(event))
 	return strings.Join(lines, "\n")
 }
 
+func splitSlots(slots []slotState) ([]slotState, []slotState) {
+	active := make([]slotState, 0, len(slots))
+	idle := make([]slotState, 0, len(slots))
+	for _, slot := range slots {
+		state := normalizeSlotState(slot.state)
+		if state == "idle" {
+			idle = append(idle, slot)
+		} else {
+			active = append(active, slot)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool {
+		a := slotActivityTime(active[i])
+		b := slotActivityTime(active[j])
+		if a.Equal(b) {
+			return active[i].id < active[j].id
+		}
+		return a.After(b)
+	})
+	sort.Slice(idle, func(i, j int) bool {
+		return idle[i].id < idle[j].id
+	})
+	return active, idle
+}
+
+func slotActivityTime(slot slotState) time.Time {
+	if !slot.lastUpdate.IsZero() {
+		return slot.lastUpdate
+	}
+	if !slot.startedAt.IsZero() {
+		return slot.startedAt
+	}
+	return time.Time{}
+}
+
+func threadHeaderLine() string {
+	progressWidth := workerProgressBarWidth + 10
+	return console.ColorInfo(fmt.Sprintf("%-3s %-*s %-*s %-*s %s",
+		"ID",
+		workerStateWidth, "STATE",
+		workerChunkWidth, "CHUNK",
+		progressWidth, "PROGRESS",
+		"RATE",
+	))
+}
+
+func hiddenSummaryLine(activeHidden, idleHidden int) string {
+	parts := make([]string, 0, 2)
+	if activeHidden > 0 {
+		parts = append(parts, fmt.Sprintf("%d active", activeHidden))
+	}
+	if idleHidden > 0 {
+		parts = append(parts, fmt.Sprintf("%d idle", idleHidden))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return console.ColorMuted(fmt.Sprintf("hidden: %s", strings.Join(parts, ", ")))
+}
+
 func slotLine(slot slotState, now time.Time) string {
-	runState := slot.state
-	if runState == "" {
-		runState = "idle"
-	}
-	chunkLabel := shortID(slot.chunkID)
-	if runState == "idle" {
-		chunkLabel = "-"
-	}
+	runState := normalizeSlotState(slot.state)
+	chunkLabel := formatChunkLabel(runState, slot.chunkID)
+
 	barProcessed := slot.processed
 	barTotal := slot.total
 	state := console.ProgressStateIdle
@@ -216,32 +298,87 @@ func slotLine(slot slotState, now time.Time) string {
 		state = console.ProgressStateIdle
 	}
 
-	bar := console.FormatProgressBar(barProcessed, barTotal, workerProgressBarWidth, state)
+	progressWidth := workerProgressBarWidth + 10
+	bar := padRight("-", progressWidth)
+	if runState == "cracking" || runState == "reporting" {
+		bar = console.FormatProgressBar(barProcessed, barTotal, workerProgressBarWidth, state)
+	}
 	rateLabel := "-"
-	if !slot.startedAt.IsZero() && slot.processed > 0 {
-		elapsed := now.Sub(slot.startedAt).Seconds()
-		if elapsed > 0 {
-			rateLabel = console.FormatHashRate(float64(slot.processed) / elapsed)
+	if runState == "cracking" || runState == "reporting" {
+		if !slot.startedAt.IsZero() && slot.processed > 0 {
+			elapsed := now.Sub(slot.startedAt).Seconds()
+			if elapsed > 0 {
+				rateLabel = console.FormatHashRate(float64(slot.processed) / elapsed)
+			}
 		}
 	}
-	return fmt.Sprintf("T%02d %s chunk=%s %s rate=%s", slot.id, colorState(runState), chunkLabel, bar, rateLabel)
+	rateLabel = padLeft(rateLabel, workerRateWidth)
+	return fmt.Sprintf("T%02d %s %s %s %s", slot.id, stateLabel(runState), chunkLabel, bar, rateLabel)
 }
 
-func colorState(state string) string {
+func stateLabel(state string) string {
+	label := padRight(shortStateLabel(state), workerStateWidth)
+	return colorStateLabel(state, label)
+}
+
+func stateLabelCompact(state string) string {
+	return colorStateLabel(state, shortStateLabel(state))
+}
+
+func colorStateLabel(state, label string) string {
 	switch state {
 	case "cracking":
-		return console.ColorProcessing(state)
+		return console.ColorProcessing(label)
 	case "dispatch-paused", "stalled":
-		return console.ColorWarn(state)
+		return console.ColorWarn(label)
 	case "master-down", "error":
-		return console.ColorError(state)
+		return console.ColorError(label)
 	case "fetching", "reporting", "connecting":
-		return console.ColorInfo(state)
+		return console.ColorInfo(label)
 	case "idle":
-		return console.ColorMuted(state)
+		return console.ColorMuted(label)
 	default:
-		return console.ColorInfo(state)
+		return console.ColorInfo(label)
 	}
+}
+
+func shortStateLabel(state string) string {
+	switch state {
+	case "cracking":
+		return "crack"
+	case "reporting":
+		return "report"
+	case "fetching":
+		return "fetch"
+	case "dispatch-paused":
+		return "paused"
+	case "master-down":
+		return "down"
+	case "connecting":
+		return "conn"
+	case "connected":
+		return "conn"
+	case "idle":
+		return "idle"
+	default:
+		return state
+	}
+}
+
+func normalizeSlotState(state string) string {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return "idle"
+	}
+	return state
+}
+
+func formatChunkLabel(state, chunkID string) string {
+	if state == "idle" || state == "fetching" || state == "connecting" || state == "master-down" || state == "dispatch-paused" {
+		return padRight("-", workerChunkWidth)
+	}
+	label := shortChunkID(chunkID, workerChunkWidth)
+	return padRight(label, workerChunkWidth)
 }
 
 func eventLine(event workerEvent) string {
@@ -265,16 +402,63 @@ func colorEvent(level workerEventLevel, message string) string {
 }
 
 func separatorLine() string {
-	return strings.Repeat("-", 90)
+	return console.SeparatorLine()
 }
 
-func shortID(value string) string {
+func shortChunkID(value string, max int) string {
 	if value == "" {
 		return "-"
 	}
-	const max = 12
+	suffix := chunkIDSuffix(value)
+	if suffix != "" {
+		label := "#" + suffix
+		return shortLabel(label, max)
+	}
+	return shortLabel(value, max)
+}
+
+func chunkIDSuffix(value string) string {
+	end := len(value)
+	start := end
+	for start > 0 {
+		ch := value[start-1]
+		if ch < '0' || ch > '9' {
+			break
+		}
+		start--
+	}
+	if start == end {
+		return ""
+	}
+	return value[start:end]
+}
+
+func shortLabel(value string, max int) string {
+	if max <= 0 || value == "" {
+		return ""
+	}
 	if len(value) <= max {
 		return value
 	}
 	return value[len(value)-max:]
+}
+
+func padRight(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
+}
+
+func padLeft(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	if len(value) >= width {
+		return value
+	}
+	return strings.Repeat(" ", width-len(value)) + value
 }

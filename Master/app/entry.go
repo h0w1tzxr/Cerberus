@@ -18,7 +18,7 @@ const autoStartTimeout = 5 * time.Second
 
 func Run(args []string) error {
 	if len(args) == 0 {
-		return runServer()
+		return runServer(true)
 	}
 
 	err := handleCLI(args)
@@ -32,7 +32,7 @@ func Run(args []string) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- runServer()
+		serverErr <- runServer(false)
 	}()
 
 	if err := waitForServer(addr, serverErr); err != nil {

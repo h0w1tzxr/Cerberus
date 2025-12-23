@@ -31,6 +31,7 @@ type Task struct {
 	Hash          string
 	Mode          HashMode
 	WordlistPath  string
+	OutputPath    string
 	Status        TaskStatus
 	Priority      int
 	ChunkSize     int64
@@ -38,6 +39,9 @@ type Task struct {
 	NextIndex     int64
 	Completed     int64
 	PendingRanges []taskRange
+	BatchID       string
+	BatchIndex    int
+	BatchTotal    int
 	Attempts      int
 	MaxRetries    int
 	Found         bool
@@ -50,6 +54,8 @@ type Task struct {
 	CanceledBy    string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	StartedAt     time.Time
+	CompletedAt   time.Time
 }
 
 type taskRange struct {
@@ -86,4 +92,26 @@ func parseHashMode(value string) (HashMode, error) {
 	default:
 		return "", fmt.Errorf("invalid mode %q (expected md5 or sha256)", value)
 	}
+}
+
+func normalizeHash(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func taskDuration(task *Task, now time.Time) time.Duration {
+	if task == nil {
+		return 0
+	}
+	start := task.StartedAt
+	if start.IsZero() {
+		start = task.CreatedAt
+	}
+	end := task.CompletedAt
+	if end.IsZero() {
+		end = now
+	}
+	if end.Before(start) {
+		return 0
+	}
+	return end.Sub(start)
 }
