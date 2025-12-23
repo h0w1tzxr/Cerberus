@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package cracker;
+
+option go_package = "./cracker";
+
+enum HashMode {
+  HASH_MODE_UNSPECIFIED = 0;
+  HASH_MODE_MD5 = 1;
+  HASH_MODE_SHA256 = 2;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_QUEUED = 1;
+  TASK_STATUS_REVIEWED = 2;
+  TASK_STATUS_APPROVED = 3;
+  TASK_STATUS_RUNNING = 4;
+  TASK_STATUS_COMPLETED = 5;
+  TASK_STATUS_FAILED = 6;
+  TASK_STATUS_CANCELED = 7;
+}
+
+enum TaskAction {
+  TASK_ACTION_UNSPECIFIED = 0;
+  TASK_ACTION_REVIEW = 1;
+  TASK_ACTION_APPROVE = 2;
+  TASK_ACTION_DISPATCH = 3;
+  TASK_ACTION_CANCEL = 4;
+  TASK_ACTION_RETRY = 5;
+  TASK_ACTION_PAUSE = 6;
+  TASK_ACTION_RESUME = 7;
+  TASK_ACTION_SET_PRIORITY = 8;
+}
+
+// Service definisi untuk komunikasi Master-Worker
+service CrackerService {
+  // Worker mendaftar dan melaporkan kemampuan
+  rpc RegisterWorker (WorkerInfo) returns (Ack);
+
+  // Worker meminta chunk pekerjaan baru (Work Stealing / Pull-based)
+  rpc GetTask (WorkerInfo) returns (TaskChunk);
+  
+  // Worker melaporkan progres chunk
+  rpc ReportProgress (ProgressUpdate) returns (Ack);
+
+  // Worker melaporkan hasil (Found/Not Found)
+  rpc ReportResult (CrackResult) returns (Ack);
+}
+
+// Service untuk operator management (manual task control)
+service CrackerAdmin {
+  rpc AddTask (TaskSpec) returns (Task);
+  rpc AddTaskBatch (TaskBatchSpec) returns (TaskListResponse);
+  rpc ApplyTaskAction (TaskActionRequest) returns (Task);
+  rpc GetTask (TaskActionRequest) returns (Task);
+  rpc ListTasks (TaskListRequest) returns (TaskListResponse);
+  rpc SetDispatchPaused (DispatchControlRequest) returns (DispatchStatus);
+  rpc ListWorkers (WorkerListRequest) returns (WorkerListResponse);
+}
+
+message WorkerInfo {
+  string worker_id = 1;
+  int32 cpu_cores = 2; // Kapasitas worker
+}
+
+message TaskChunk {
+  string task_id = 1;
+  int64 start_index = 2; // Index awal keyspace
+  int64 end_index = 3;   // Index akhir keyspace
+  string target_hash = 4; // Hash yang harus di-crack
+  bool no_more_work = 5;  // Signal jika pekerjaan selesai
+  HashMode mode = 6;
+  string wordlist_path = 7;
+  bool dispatch_paused = 8;
+  int64 total_keyspace = 9;
+}
+
+message CrackResult {
+  string task_id = 1;
+  bool success = 2;
+  string found_password = 3;
+  string worker_id = 4;
+  string error_message = 5;
+  int64 processed = 6;
+  int64 total = 7;
+  int64 duration_ms = 8;
+  double avg_rate = 9;
+}
+
+message ProgressUpdate {
+  string chunk_id = 1;
+  string worker_id = 2;
+  int64 processed = 3;
+  int64 total = 4;
+}
+
+message Ack {
+  bool received = 1;
+}
+
+message TaskSpec {
+  string hash = 1;
+  HashMode mode = 2;
+  string wordlist_path = 3;
+  int64 chunk_size = 4;
+  int64 keyspace = 5;
+  int32 priority = 6;
+  int32 max_retries = 7;
+  string output_path = 8;
+}
+
+message TaskBatchSpec {
+  repeated string hashes = 1;
+  HashMode mode = 2;
+  string wordlist_path = 3;
+  int64 chunk_size = 4;
+  int64 keyspace = 5;
+  int32 priority = 6;
+  int32 max_retries = 7;
+  string output_path = 8;
+}
+
+message TaskActionRequest {
+  string task_id = 1;
+  TaskAction action = 2;
+  string operator = 3;
+  int32 priority = 4;
+  string reason = 5;
+}
+
+message TaskListRequest {
+  repeated TaskStatus status_filter = 1;
+}
+
+message TaskListResponse {
+  repeated Task tasks = 1;
+}
+
+message DispatchControlRequest {
+  bool paused = 1;
+  string operator = 2;
+}
+
+message DispatchStatus {
+  bool paused = 1;
+}
+
+message WorkerListRequest {}
+
+message WorkerStatus {
+  string worker_id = 1;
+  int32 cpu_cores = 2;
+  int64 last_seen_unix = 3;
+  int32 inflight = 4;
+  string health = 5;
+}
+
+message WorkerListResponse {
+  repeated WorkerStatus workers = 1;
+}
+
+message Task {
+  string id = 1;
+  string hash = 2;
+  HashMode mode = 3;
+  string wordlist_path = 4;
+  TaskStatus status = 5;
+  int32 priority = 6;
+  int64 chunk_size = 7;
+  int64 total_keyspace = 8;
+  int64 completed = 9;
+  int64 next_index = 10;
+  int32 attempts = 11;
+  int32 max_retries = 12;
+  bool found = 13;
+  string found_password = 14;
+  string failure_reason = 15;
+  bool dispatch_ready = 16;
+  bool paused = 17;
+  string reviewed_by = 18;
+  string approved_by = 19;
+  string canceled_by = 20;
+  int64 created_at_unix = 21;
+  int64 updated_at_unix = 22;
+}
