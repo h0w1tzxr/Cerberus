@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"cracker/Common/console"
@@ -42,18 +43,22 @@ func main() {
 	workerID := "worker-" + hostname // Atau gunakan UUID random
 
 	cpuCores := int32(runtime.NumCPU())
-	telemetry := newWorkerTelemetry()
+	slotCount := int(cpuCores)
+	if slotCount < 1 {
+		slotCount = 1
+	}
+	telemetry := newWorkerTelemetry(workerID, MasterAddress, cpuCores, slotCount)
 	renderer := console.NewStickyRenderer(os.Stdout)
 	log.SetOutput(renderer)
 	renderLoop := console.NewRenderLoop(renderer, renderInterval, telemetry.StatusLine)
 	renderLoop.Start()
 	defer renderLoop.Stop()
 
-	telemetry.SetState("starting")
+	telemetry.SetGlobalState("starting")
 	logInfo("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, MasterAddress)
 
 	// 1. Connect ke Master via gRPC
-	telemetry.SetState("connecting")
+	telemetry.SetGlobalState("connecting")
 	conn, err := grpc.Dial(MasterAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logError("Did not connect: %v", err)
@@ -62,69 +67,156 @@ func main() {
 	defer conn.Close()
 	c := pb.NewCrackerServiceClient(conn)
 
-	registerWorker(c, workerID, cpuCores)
+	if err := registerWorker(c, workerID, cpuCores); err != nil {
+		logError("Failed to register worker: %v", err)
+		return
+	}
+	telemetry.SetGlobalState("connected")
+	logInfo("Connected to master: %s", MasterAddress)
 
+	tracker := newConnectionTracker(true)
+	var wg sync.WaitGroup
+	wg.Add(slotCount)
+	for i := 0; i < slotCount; i++ {
+		slotID := i
+		go func() {
+			defer wg.Done()
+			runWorkerSlot(slotID, c, telemetry, workerID, cpuCores, tracker)
+		}()
+	}
+	wg.Wait()
+}
+
+type prefetchResult struct {
+	task *pb.TaskChunk
+	err  error
+}
+
+type connectionTracker struct {
+	mu        sync.Mutex
+	connected bool
+}
+
+func newConnectionTracker(connected bool) *connectionTracker {
+	return &connectionTracker{connected: connected}
+}
+
+func (c *connectionTracker) MarkConnected(telemetry *workerTelemetry) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	wasConnected := c.connected
+	c.connected = true
+	c.mu.Unlock()
+	if !wasConnected {
+		logInfo("Master reachable.")
+	}
+	if telemetry != nil {
+		telemetry.SetGlobalState("connected")
+	}
+}
+
+func (c *connectionTracker) MarkDisconnected(telemetry *workerTelemetry, err error) {
+	if c == nil || err == nil {
+		return
+	}
+	c.mu.Lock()
+	wasConnected := c.connected
+	c.connected = false
+	c.mu.Unlock()
+	if wasConnected {
+		logWarn("Master unreachable: %v", err)
+	}
+	if telemetry != nil {
+		telemetry.SetGlobalState("master-down")
+		telemetry.RecordEvent(workerEventWarn, fmt.Sprintf("master unreachable: %v", err))
+	}
+}
+
+func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *workerTelemetry, workerID string, cpuCores int32, tracker *connectionTracker) {
 	idleDelay := standbyDelay
 	errorDelay := standbyDelay
+	var prefetched *pb.TaskChunk
+	var prefetchedErr error
 
-	// 2. Loop Work Stealing
 	for {
-		// Minta Task (Pull)
-		telemetry.SetState("fetching")
-		ctx, cancel := context.WithTimeout(context.Background(), getTaskTimeout)
-		task, err := c.GetTask(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
-		cancel()
+		telemetry.SetSlotState(slotID, "fetching")
+		var task *pb.TaskChunk
+		var err error
+		if prefetched != nil || prefetchedErr != nil {
+			task = prefetched
+			err = prefetchedErr
+			prefetched = nil
+			prefetchedErr = nil
+		} else {
+			task, err = getTask(client, workerID, cpuCores)
+		}
 
 		if err != nil {
-			if errorDelay == standbyDelay {
-				logError("Error getting task: %v", err)
+			if tracker != nil {
+				tracker.MarkDisconnected(telemetry, err)
 			}
-			telemetry.SetState("master-down")
+			telemetry.SetSlotState(slotID, "master-down")
 			time.Sleep(errorDelay)
 			errorDelay = nextDelay(errorDelay, maxErrorDelay)
 			continue
 		}
+		if tracker != nil {
+			tracker.MarkConnected(telemetry)
+		}
 		errorDelay = standbyDelay
 
+		if task == nil {
+			telemetry.SetSlotState(slotID, "idle")
+			time.Sleep(idleDelay)
+			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
+			continue
+		}
+
 		if task.DispatchPaused {
-			telemetry.SetState("dispatch-paused")
+			telemetry.SetSlotState(slotID, "dispatch-paused")
 			time.Sleep(idleDelay)
 			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
 
 		if task.NoMoreWork {
-			telemetry.SetState("idle")
+			telemetry.SetSlotState(slotID, "idle")
 			time.Sleep(idleDelay)
 			idleDelay = nextDelay(idleDelay, maxStandbyDelay)
 			continue
 		}
 		idleDelay = standbyDelay
 
-		// Proses Cracking
-		telemetry.StartChunk(task.TaskId, task.EndIndex-task.StartIndex)
-		logInfo("Processing chunk: %d - %d", task.StartIndex, task.EndIndex)
+		telemetry.StartChunk(slotID, task.TaskId, task.EndIndex-task.StartIndex)
+		prefetchCh := make(chan prefetchResult, 1)
+		go func() {
+			nextTask, err := getTask(client, workerID, cpuCores)
+			prefetchCh <- prefetchResult{task: nextTask, err: err}
+		}()
+
 		progressFn := func(processed, total int64) {
-			telemetry.UpdateProgress(processed, total)
-			reportProgress(c, workerID, task.TaskId, processed, total)
+			telemetry.UpdateProgress(slotID, processed, total)
+			_ = reportProgress(client, workerID, task.TaskId, processed, total)
 		}
 		found, passwd, errMsg, stats := processTask(task, progressFn)
 		avgRate := 0.0
 		if stats.duration > 0 && stats.processed > 0 {
 			avgRate = float64(stats.processed) / stats.duration.Seconds()
 		}
-		telemetry.FinishChunk(stats.processed, stats.total)
+		telemetry.FinishChunk(slotID, stats.processed, stats.total)
+
 		if errMsg != "" {
-			logError("Chunk %d-%d failed: %s (duration=%s avg=%s)", task.StartIndex, task.EndIndex, errMsg, formatDuration(stats.duration), console.FormatHashRate(avgRate))
+			telemetry.RecordEvent(workerEventError, fmt.Sprintf("chunk %d-%d failed: %s", task.StartIndex, task.EndIndex, errMsg))
 		} else if found {
-			logSuccess("Password found for chunk %d-%d: %s (duration=%s avg=%s)", task.StartIndex, task.EndIndex, passwd, formatDuration(stats.duration), console.FormatHashRate(avgRate))
-		} else {
-			logWarn("Chunk %d-%d exhausted with no match (duration=%s avg=%s)", task.StartIndex, task.EndIndex, formatDuration(stats.duration), console.FormatHashRate(avgRate))
+			msg := fmt.Sprintf("password found for chunk %d-%d: %s", task.StartIndex, task.EndIndex, passwd)
+			telemetry.RecordEvent(workerEventSuccess, msg)
+			logSuccess("Password found by %s: %s", workerID, passwd)
 		}
 
-		// Lapor Hasil
-		telemetry.SetState("reporting")
-		err = reportResult(c, &pb.CrackResult{
+		telemetry.SetSlotState(slotID, "reporting")
+		err = reportResult(client, &pb.CrackResult{
 			TaskId:        task.TaskId,
 			WorkerId:      workerID,
 			Success:       found,
@@ -135,18 +227,26 @@ func main() {
 			DurationMs:    stats.duration.Milliseconds(),
 			AvgRate:       avgRate,
 		})
-
 		if err != nil {
-			logWarn("Failed to report result: %v", err)
+			telemetry.RecordEvent(workerEventWarn, fmt.Sprintf("report result failed: %v", err))
 		}
 
-		telemetry.SetState("idle")
+		telemetry.SetSlotState(slotID, "idle")
 		if found {
-			logInfo("Password found. Standing by...")
 			time.Sleep(standbyDelay)
-			continue
 		}
+
+		res := <-prefetchCh
+		prefetched = res.task
+		prefetchedErr = res.err
 	}
+}
+
+func getTask(client pb.CrackerServiceClient, workerID string, cpuCores int32) (*pb.TaskChunk, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), getTaskTimeout)
+	task, err := client.GetTask(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
+	cancel()
+	return task, err
 }
 
 type chunkStats struct {
@@ -313,22 +413,27 @@ func nextDelay(current, max time.Duration) time.Duration {
 	return next
 }
 
-func registerWorker(client pb.CrackerServiceClient, workerID string, cpuCores int32) {
+func registerWorker(client pb.CrackerServiceClient, workerID string, cpuCores int32) error {
+	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		_, err := client.RegisterWorker(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
-		logWarn("Failed to register worker (attempt %d): %v", attempt, err)
+		lastErr = err
 		time.Sleep(standbyDelay)
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("registration failed")
+	}
+	return lastErr
 }
 
-func reportProgress(client pb.CrackerServiceClient, workerID, chunkID string, processed, total int64) {
+func reportProgress(client pb.CrackerServiceClient, workerID, chunkID string, processed, total int64) error {
 	if chunkID == "" {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_, err := client.ReportProgress(ctx, &pb.ProgressUpdate{
@@ -338,9 +443,7 @@ func reportProgress(client pb.CrackerServiceClient, workerID, chunkID string, pr
 		Total:     total,
 	})
 	cancel()
-	if err != nil {
-		logWarn("Failed to report progress: %v", err)
-	}
+	return err
 }
 
 func reportResult(client pb.CrackerServiceClient, result *pb.CrackResult) error {

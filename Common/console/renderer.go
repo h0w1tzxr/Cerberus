@@ -3,16 +3,21 @@ package console
 import (
 	"bufio"
 	"io"
+	"strings"
 	"sync"
 )
 
-const clearLine = "\r\033[2K"
+const (
+	clearLine = "\r\033[2K"
+	cursorUp  = "\033[1A"
+)
 
 type StickyRenderer struct {
 	mu     sync.Mutex
 	out    *bufio.Writer
 	status string
 	active bool
+	lines  int
 }
 
 func NewStickyRenderer(w io.Writer) *StickyRenderer {
@@ -53,11 +58,16 @@ func (r *StickyRenderer) SetStatus(line string) {
 		}
 		r.status = ""
 		r.active = false
+		r.lines = 0
 		r.mu.Unlock()
 		return
 	}
+	if r.active {
+		r.clearStatusLocked()
+	}
 	r.status = line
 	r.active = true
+	r.lines = countLines(line)
 	r.renderStatusLocked()
 	r.mu.Unlock()
 }
@@ -72,6 +82,7 @@ func (r *StickyRenderer) ClearStatus() {
 	}
 	r.status = ""
 	r.active = false
+	r.lines = 0
 	r.mu.Unlock()
 }
 
@@ -88,10 +99,32 @@ func (r *StickyRenderer) renderStatusLocked() {
 	if !r.active {
 		return
 	}
-	_, _ = r.out.WriteString(clearLine)
-	_, _ = r.out.WriteString(r.status)
+	lines := strings.Split(r.status, "\n")
+	for i, line := range lines {
+		_, _ = r.out.WriteString(clearLine)
+		_, _ = r.out.WriteString(line)
+		if i < len(lines)-1 {
+			_, _ = r.out.WriteString("\n")
+		}
+	}
 }
 
 func (r *StickyRenderer) clearStatusLocked() {
-	_, _ = r.out.WriteString(clearLine)
+	if r.lines <= 1 {
+		_, _ = r.out.WriteString(clearLine)
+		return
+	}
+	for i := 0; i < r.lines; i++ {
+		_, _ = r.out.WriteString(clearLine)
+		if i < r.lines-1 {
+			_, _ = r.out.WriteString(cursorUp)
+		}
+	}
+}
+
+func countLines(line string) int {
+	if line == "" {
+		return 0
+	}
+	return strings.Count(line, "\n") + 1
 }

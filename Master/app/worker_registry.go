@@ -9,6 +9,7 @@ type workerInfo struct {
 	AvgRate           float64
 	TotalProcessed    int64
 	TotalDuration     time.Duration
+	TotalOverhead     time.Duration
 	CompletedChunks   int64
 	LastChunkID       string
 	LastTaskID        string

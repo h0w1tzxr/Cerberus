@@ -1,39 +1,119 @@
-# Cerberus Hash Cracker (gRPC Distributed Demo)
+<!--
+  Cerberus README
+  Repo : https://github.com/h0w1tzxr/Cerberus
+  Lisensi: GNU GPLv3
+-->
 
-Cerberus adalah demo distributed hash cracking berbasis gRPC dengan arsitektur Master-Worker. Fokus utamanya adalah kontrol manual oleh operator untuk task lifecycle, tetapi strukturnya tetap siap untuk automation di masa depan.
+<div align="center">
 
-## Ringkas
+<!-- Animated header -->
+<a href="https://github.com/h0w1tzxr/Cerberus">
+  <img src="https://readme-typing-svg.herokuapp.com?font=JetBrains+Mono&size=26&duration=2500&pause=500&color=36BCF7FF&center=true&vCenter=true&width=900&lines=Cerberus+%E2%80%94+Hash+Cracker+(Demo+gRPC+Terdistribusi);Master%E2%80%93Worker+%7C+CLI-first+%7C+Inline+Status+Rendering;md5+%26+sha256+%7C+Wordlist+Streaming+%7C+Monitoring+Worker" alt="Cerberus header" />
+</a>
 
-- Streamlined workflow: add -> approved/dispatch-ready -> running -> completed/failed/canceled (manual review/approve/dispatch tetap tersedia bila dibutuhkan).
-- Admin CLI untuk kontrol task dan monitor worker.
-- Hash mode eksplisit: md5 dan sha256.
-- Wordlist streaming + indexing untuk file besar.
-- Health dan inflight tracking per worker.
+<br/>
 
-## Prasyarat
+<!-- Badges -->
+<p>
+  <a href="https://github.com/h0w1tzxr/Cerberus/blob/main/LICENSE">
+    <img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-blue.svg" />
+  </a>
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white" />
+  <img alt="gRPC" src="https://img.shields.io/badge/gRPC-enabled-2EA9FF?logo=grpc&logoColor=white" />
+  <img alt="CLI" src="https://img.shields.io/badge/UX-CLI--first-222222" />
+  <a href="https://github.com/h0w1tzxr/Cerberus/issues">
+    <img alt="Issues" src="https://img.shields.io/github/issues/h0w1tzxr/Cerberus" />
+  </a>
+  <a href="https://github.com/h0w1tzxr/Cerberus/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/h0w1tzxr/Cerberus" />
+  </a>
+  <a href="https://github.com/h0w1tzxr/Cerberus/network/members">
+    <img alt="Forks" src="https://img.shields.io/github/forks/h0w1tzxr/Cerberus" />
+  </a>
+  <a href="https://github.com/h0w1tzxr/Cerberus/commits/main">
+    <img alt="Last Commit" src="https://img.shields.io/github/last-commit/h0w1tzxr/Cerberus" />
+  </a>
+</p>
 
-- Go 1.24+
-- Port `50051` harus terbuka antara Master dan Worker.
-- Jika memakai wordlist, path file harus valid di Master (saat add task) dan Worker (saat eksekusi).
+<!-- Decorative divider -->
+<img src="https://capsule-render.vercel.app/api?type=rect&color=0:36BCF7,100:8A2BE2&height=3&section=header" width="100%" alt="divider" />
 
-## Struktur Project
+</div>
 
-- `Master/` - gRPC server + admin CLI.
-- `Worker/` - gRPC client (worker).
-- `Common/wordlist/` - wordlist streaming + indexing.
-- `cracker/` - protobuf + generated stubs.
+> **Cerberus** adalah demo hash cracking terdistribusi berbasis **gRPC** dengan arsitektur **Master–Worker**.
+> Alur kerja berfokus pada kontrol operator yang jelas: membuat task, memantau progres, dan mengatur dispatch secara manual, sementara worker terus menarik pekerjaan.
+>
+> README ini ditulis dengan gaya **CLI-first** yang ramah pengguna dan menampilkan **status inline** (tanpa TUI layar penuh).
 
-## Quickstart
+---
 
-### 1) Clone dan install dependency
+## ✨ TL;DR
+
+- ✅ **Workflow manual** yang jelas dengan lifecycle task yang tegas.
+- ✅ **Inline status rendering**: status “menempel” di bawah terminal, log tetap scroll.
+- ✅ Output Rich CLI dengan **tag ANSI semantic**.
+- ✅ Mode hash: **MD5** dan **SHA256**.
+- ✅ **Wordlist streaming + indexing** untuk file besar.
+- ✅ Monitoring **Worker Health** dan **Rate per Worker**.
+
+## 🧩 Fitur Utama (Card View)
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h3>🧭 Operator-Controlled</h3>
+      <ul>
+        <li>Task lifecycle jelas</li>
+        <li>Dispatch bisa pause/resume</li>
+        <li>Audit lewat output CLI</li>
+      </ul>
+    </td>
+    <td width="33%" valign="top">
+      <h3>⚡ Inline Status UI</h3>
+      <ul>
+        <li>Log tetap scroll normal</li>
+        <li>Status bar update ~30 Hz</li>
+        <li>Tanpa full-screen TUI</li>
+      </ul>
+    </td>
+    <td width="33%" valign="top">
+      <h3>🧱 Skalabel & Terukur</h3>
+      <ul>
+        <li>Worker menarik pekerjaan (pull)</li>
+        <li>Telemetri per-chunk</li>
+        <li>Ringkasan per-worker</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+## 🧰 Prasyarat
+
+- **Go 1.22+**
+- Port **`50051`** dapat diakses antara **Master** dan **Worker**
+- Jika memakai wordlist, **path harus ada di Master dan Worker**
+
+## 🗂️ Struktur Project
+
+```text
+Master/           # gRPC server + admin CLI
+Worker/           # gRPC client (worker)
+Common/wordlist/  # wordlist streaming + indexing
+Common/console/   # renderer inline + tag ANSI
+cracker/          # protobuf + generated stubs
+```
+
+---
+
+## 🚀 Quickstart
+
+### 1) Install dependency
 
 ```bash
-git clone <repo-url>
-cd Cerberus
 go mod tidy
 ```
 
-### 2) Jalankan Master
+### 2) Jalankan Master di Terminal 1
 
 ```bash
 go run ./Master
@@ -41,142 +121,142 @@ go run ./Master
 
 Output contoh:
 
-```
-Master Hash Cracker running on port :50051
-Ready for Workers...
+```text
+[i] Master Hash Cracker running on port :50051
+[i] Ready for Workers...
 ```
 
-### 3) Konfigurasi Worker
+### 3) Konfigurasi Worker dulu
 
-Di mesin Worker, ubah alamat Master di `Worker/Worker.go`:
+Ubah alamat Master di `Worker/Worker.go`:
 
 ```go
 const MasterAddress = "<IP_MASTER>:50051"
 ```
 
-### 4) Jalankan Worker
+### 4) Jalankan Worker di device yang akan jadi Worker
 
 ```bash
 go run ./Worker
 ```
 
-### 5) Tambah task (auto-approve + auto-dispatch)
+### 5) Tambah task di Terminal Master ke 2
 
 ```bash
 go run ./Master task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
 ```
 
-## Testing Master dan Worker
+<details>
+<summary><b>✅ Tips</b> (klik untuk buka)</summary>
 
-### Manual end-to-end test (recommended)
+* Mulailah dengan `--keyspace` kecil dulu untuk validasi end-to-end.
 
-Terminal 1 (Master):
+</details>
 
-```bash
-go run ./Master
-```
+---
 
-Terminal 2 (CLI add):
+## 🖥️ Inline Status Rendering (Tanpa TUI)
 
-```bash
-go run ./Master task add --hash <hash> --mode md5 --keyspace 10000 --chunk 1000
-```
+Cerberus memakai CLI linear yang nyaman untuk terminal:
 
-Terminal 3 (Worker):
+* Log tetap scroll normal.
+* Satu baris status menempel di bawah terminal
 
-```bash
-go run ./Worker
-```
+### 🎨 Tag ANSI
 
-Verifikasi:
+| Jenis   |          Tag         |
+| ------- | -------------------- |
+| Sukses  |          [+]         |
+| Error   |          [!]         |
+| Warning |          [*]         |
+| Info    |          [i]         |
 
-- Master log menampilkan assign chunk + progress bar.
-- Worker log menampilkan progress bar dan report result.
-- `go run ./Master task show task-1` menunjukkan progress bertambah dan status selesai.
+---
 
-### Manual test dengan wordlist
+## 🧪 CLI Usage
 
-```bash
-go run ./Master task add --hash <hash> --mode sha256 --wordlist /path/to/wordlist.txt --chunk 1000
-go run ./Worker
-```
+Binary **Master** akan menjadi CLI saat diberi argumen.
+Jika memakai alamat default lokal dan server belum berjalan, Master akan **auto-start**.
 
-Catatan:
-
-- Pastikan path wordlist sama di Master dan Worker.
-- Jika worker gagal membaca wordlist, status akan menjadi `failed` dan perlu `retry`.
-
-### Menjalankan dari folder Master
-
-Jika kamu ada di folder `Master/`:
+### Bantuan global
 
 ```bash
-go run Master.go task list
+go run ./Master -h
 ```
-
-## Arsitektur dan Data Flow
-
-### Komponen utama
-
-- **CrackerService** (gRPC untuk worker): `GetTask`, `ReportResult`.
-- **CrackerAdmin** (gRPC untuk operator): add/list/show task, apply action, list worker, pause/resume dispatch.
-- **Master State**:
-  - Task registry + queue priority.
-  - Worker registry (last seen, inflight).
-  - Wordlist cache dan index.
-  - Dispatch gate (pause global).
-
-### Alur data (ringkas)
-
-1. Operator membuat task via Admin CLI.
-2. Master memvalidasi input (mode, wordlist, keyspace).
-3. Task otomatis approved + dispatch-ready (worker bisa langsung mengambil).
-4. Worker `GetTask` -> Master assign chunk.
-5. Worker brute force -> `ReportResult`.
-6. Master update progress dan status.
-
-## Task Lifecycle (detail)
-
-Status yang dipakai:
-
-Default flow: task baru akan langsung `approved` + `dispatch_ready`, jadi worker bisa mengambil tanpa review/approve/dispatch manual.
-
-- `queued`: task baru dibuat.
-- `reviewed`: task sudah direview operator.
-- `approved`: task siap diproses (default `task add` sudah auto `dispatch_ready`, manual flow bisa tetap butuh `dispatch`).
-- `running`: task sedang berjalan (ada chunk aktif).
-- `completed`: task selesai (password ditemukan atau keyspace habis).
-- `failed`: task gagal (contoh: wordlist error).
-- `canceled`: task dibatalkan oleh operator.
-
-Action dan efek:
-
-- **review**: `queued -> reviewed` (opsional).
-- **approve**: `reviewed -> approved` (opsional).
-- **dispatch**: set `dispatch_ready=true` agar worker bisa mengambil chunk (opsional).
-- **pause**: stop assign chunk baru untuk task ini.
-- **resume**: task boleh diproses lagi (jika dispatch-ready).
-- **cancel**: stop task, clear leases aktif, hasil late tidak dipakai.
-- **retry**: reset progress task gagal kembali ke `approved` (perlu dispatch ulang).
-- **set-priority**: naik/turunkan prioritas di queue.
-
-## Admin CLI - Referensi Lengkap
-
-Semua perintah dijalankan lewat `go run ./Master ...`. Binary yang sama akan bertindak sebagai CLI bila ada argumen.
-
-## Inline Status (CLI)
-
-TUI fullscreen dihapus. Master dan Worker kini menampilkan status line yang menempel di bawah terminal, sementara log tetap scroll normal. Gunakan perintah CLI biasa untuk monitoring.
 
 ### Global flags
 
-- `--addr` (default `localhost:50051`) - alamat gRPC Master.
-- `--operator` (default `USER` atau `operator`) - identitas operator.
+* `--addr` (default `localhost:50051`) - alamat gRPC Master
+* `--operator` (default `$USER` atau `operator`) - identitas operator
 
-### Task add (single)
+### Commands
+
+* `task` - manajemen task
+* `worker` - daftar worker
+* `dispatch` - pause/resume dispatch global
+
+### Shortcut single-dash
+
+* `-t` = `task`
+* `-w` = `worker`
+* `-d` = `dispatch`
+
+### Shortcut subcommand task
+
+* `-a` add
+* `-b` add-batch
+* `-l` list
+* `-s` show
+* `-d` dispatch
+* `-c` cancel
+* `-p` pause
+* `-u` resume
+* `-r` retry
+
+### Bantuan kontekstual
 
 ```bash
-go run ./Master --addr <master:50051> --operator alice task add \
+go run ./Master task -h
+go run ./Master task add -h
+go run ./Master task list -h
+```
+
+---
+
+## 🔁 Lifecycle Task
+
+Task baru otomatis **`approved`** dan **`dispatch_ready`** sehingga worker langsung bisa mengambil.
+
+### Status
+
+* `queued`
+* `reviewed`
+* `approved`
+* `running`
+* `completed`
+* `failed`
+* `canceled`
+
+### Action
+
+* `review`: `queued -> reviewed`
+* `approve`: `reviewed -> approved`
+* `dispatch`: set task dispatch-ready
+* `pause`: stop assign chunk baru
+* `resume`: izinkan dispatch lagi
+* `cancel`: stop task, clear leases
+* `retry`: reset task gagal ke `approved`
+* `set-priority`: ubah prioritas queue
+
+---
+
+## 🧾 Contoh CLI
+
+<details>
+<summary><b>➕ Add task</b></summary>
+
+```bash
+go run ./Master task add \
   --hash <hash> \
   --mode md5 \
   --keyspace 100000 \
@@ -185,206 +265,256 @@ go run ./Master --addr <master:50051> --operator alice task add \
   --max-retries 3
 ```
 
-Keterangan flags:
+</details>
 
-- `--hash` target hash.
-- `--mode` md5 atau sha256 (wajib).
-- `--keyspace` total kombinasi untuk range numeric.
-- `--chunk` ukuran chunk.
-- `--priority` angka lebih besar diproses lebih dulu.
-- `--max-retries` batas retry task gagal.
-- `--wordlist` (opsional) path wordlist.
-
-Jika pakai wordlist:
+<details>
+<summary><b>📚 Add dengan wordlist</b></summary>
 
 ```bash
-go run ./Master task add --hash <hash> --mode sha256 --wordlist wordlist.txt --chunk 1000
+go run ./Master task add \
+  --hash <hash> \
+  --mode sha256 \
+  --wordlist /path/to/wordlist.txt \
+  --chunk 1000
 ```
 
-Catatan:
+</details>
 
-- Jika `--wordlist` dipakai, `--keyspace` akan diabaikan.
-- Master akan membangun index wordlist dan menghitung total baris.
-
-### Task add-batch (file atau stdin)
+<details>
+<summary><b>📦 Add batch</b></summary>
 
 ```bash
 go run ./Master task add-batch --file hashes.txt --mode md5 --keyspace 100000 --chunk 1000
 ```
 
-```bash
-cat hashes.txt | go run ./Master task add-batch --stdin --mode sha256 --wordlist wordlist.txt --chunk 500
-```
+</details>
 
-Tambahan:
-
-- `--file -` juga membaca dari stdin.
-- Baris kosong diabaikan.
-
-### Task review/approve/dispatch (opsional)
-
-```bash
-go run ./Master task review task-1 task-2
-go run ./Master task approve task-1 task-2
-go run ./Master task dispatch task-1 task-2
-```
-
-### Shortcut command (single dash)
-
-```bash
-go run ./Master -t -a --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
-go run ./Master -t -l
-go run ./Master -w -l
-```
-
-### Task pause/resume (per task)
-
-```bash
-go run ./Master task pause task-1
-go run ./Master task resume task-1
-```
-
-Efek:
-
-- `pause` menghentikan assign chunk baru untuk task tersebut.
-- Chunk yang sudah berjalan tetap lanjut sampai selesai.
-
-### Task cancel + reason
-
-```bash
-go run ./Master task cancel --reason "wrong hash" task-1
-```
-
-Efek:
-
-- Task langsung `canceled`.
-- Chunk aktif di-clear (hasil late diabaikan).
-
-### Task retry (manual)
-
-```bash
-go run ./Master task retry task-1
-```
-
-Efek:
-
-- Task `failed` direset jadi `approved`.
-- Progress dan pending range direset.
-- Perlu `dispatch` ulang agar worker mengambil chunk.
-
-### Task priority
-
-```bash
-go run ./Master task set-priority --priority 10 task-1
-```
-
-### Task list + filter
+<details>
+<summary><b>📋 List task</b></summary>
 
 ```bash
 go run ./Master task list
+```
+
+</details>
+
+<details>
+<summary><b>🔎 Filter status</b></summary>
+
+```bash
 go run ./Master task list --status queued,reviewed,approved,running,failed
 ```
 
-### Task show (detail)
+</details>
+
+<details>
+<summary><b>🧠 Detail task</b></summary>
 
 ```bash
 go run ./Master task show task-1
 ```
 
-### Dispatch pause/resume (global)
+</details>
+
+<details>
+<summary><b>⏸️ Pause / ▶️ Resume task</b></summary>
+
+```bash
+go run ./Master task pause task-1 task-2
+go run ./Master task resume task-1
+```
+
+</details>
+
+<details>
+<summary><b>🧨 Cancel task</b></summary>
+
+```bash
+go run ./Master task cancel --reason "operator abort" task-1
+```
+
+</details>
+
+<details>
+<summary><b>🌐 Pause / Resume dispatch global</b></summary>
 
 ```bash
 go run ./Master dispatch pause
 go run ./Master dispatch resume
 ```
 
-Efek:
+</details>
 
-- Saat paused, Worker akan masuk mode menunggu sampai dispatch dibuka lagi.
-
-### Worker list (health + inflight)
+<details>
+<summary><b>🧑‍🏭 List worker</b></summary>
 
 ```bash
 go run ./Master worker list
 ```
 
-Contoh output:
+</details>
 
+---
+
+## 📡 Telemetri & Reporting
+
+Worker mengirim telemetri per chunk saat selesai:
+
+* `processed` dan `total`
+* `duration_ms`
+* `avg_rate`
+
+Master mengagregasi dan menampilkan:
+
+* Hasil per chunk
+* Ringkasan per worker saat selesai
+* Ringkasan per worker saat stale/disconnect
+
+---
+
+## 🧠 Arsitektur
+
+### Komponen
+
+* **CrackerService** (gRPC untuk Worker): `RegisterWorker`, `GetTask`, `ReportProgress`, `ReportResult`
+* **CrackerAdmin** (gRPC untuk Operator): add/list/show task, apply action, list worker, pause/resume dispatch
+
+### Alur data
+
+1. Operator menambahkan task via CLI
+2. Master memvalidasi input dan enqueue
+3. Worker menarik chunk via `GetTask`
+4. Worker memproses dan mengirim progress
+5. Worker mengirim result + telemetri
+6. Master update status task dan statistik worker
+
+### Diagram
+
+```mermaid
+flowchart LR
+  subgraph OP["👤 Master (2nd CLI) / Operator CLI"]
+    direction TB
+    OP1["🛠️ Buat Task"]
+    OP3["📋 Kelola Task (list/show/pause/resume/cancel)"]
+    OP4["🚦 Atur Dispatch (pause/resume)"]
+    OP2["🖥️ Lihat Status Inline"]
+  end
+
+  subgraph MS["🧠 Master (gRPC Server)"]
+    direction TB
+    MS1["📡 Menyalakan gRPC Server (port :50051)"]
+    MS2["📦 Queue Task + Bagi Chunk\n(Chunk Dispatcher)"]
+    MS3["📊 Agregasi Status & Telemetri\n(Progress + Worker Health)"]
+  end
+
+  subgraph WK["🧑‍🏭 Worker (gRPC Client)"]
+    direction TB
+    WK1["📥 Pull: GetTask"]
+    WK2["⚙️ Terima & Proses Chunk"]
+    WK3["🔓 Cracking Hash"]
+    WK4["📡 Kirim Progress / Result"]
+    WK5["🏁 Jika ketemu → kirim candidate"]
+  end
+
+  %% Operator plane
+  OP1 -->|"CrackerAdmin"| MS1
+  OP3 -->|"CrackerAdmin"| MS1
+  OP4 -->|"CrackerAdmin"| MS1
+  MS3 -->|"Status inline"| OP2
+
+  %% Worker plane
+  WK1 -->|"GetTask (pull)"| MS2
+  MS2 -->|"Chunk / NoWork"| WK2
+
+  WK2 --> WK3 --> WK4
+  WK4 -->|"ReportProgress"| MS3
+  WK4 -->|"ReportResult"| MS3
+  WK5 -->|"candidate (found)"| MS3
+
+  %% Internal master flow
+  MS1 --> MS2 --> MS3
+
+  %% Styling
+  classDef card fill:#0b1220,stroke:#36bcf7,stroke-width:1.5px,color:#e6edf3;
+  classDef soft fill:#0b1220,stroke:#8a2be2,stroke-width:1.5px,color:#e6edf3;
+
+  class OP1,OP2,OP3,OP4,WK1,WK2,WK3,WK4,WK5 card;
+  class MS1,MS2,MS3 soft;
 ```
-WORKER    CORES  LAST_SEEN              INFLIGHT  HEALTH
-worker-A  4      2025-01-01T10:00:00Z   2         healthy
-```
 
-## Wordlist Behavior (Detail)
+---
 
-- Index dibangun saat `task add` / `add-batch`.
-- Index menyimpan offset setiap N baris (default stride 1024).
-- Worker membaca wordlist secara streaming per range, bukan load penuh.
-- Batas panjang line default 1 MiB per line.
-- Buffer reader default 128 KiB.
-- Jika wordlist tidak ada di Worker, task akan gagal dengan error message dan perlu `retry`.
+## ⚙️ Performa
 
-## Range Task Behavior (Detail)
+* Render UI berjalan di goroutine terpisah dan flush ~30 Hz
+* Output terminal dibuffer dengan `bufio`
+* Counter hot-path memakai atomic
 
-- `--keyspace` menentukan range 0..keyspace-1.
-- Worker melakukan zero-padding sesuai jumlah digit `keyspace-1`.
-  Contoh: `keyspace=100000` -> candidate `00000` sampai `99999`.
-- `--chunk` menentukan ukuran range per assignment.
+---
 
-## Reliability dan Failure Modes
+## 🧑‍💻 Development
 
-- Lease timeout 30s: chunk tanpa progres akan di-requeue (progres akan memperpanjang lease).
-- Worker health `stale` jika last seen > 30s.
-- Task bisa `failed` jika:
-  - Wordlist tidak ditemukan di Worker.
-  - Line wordlist terlalu panjang.
-  - Error I/O saat membaca.
-- Task `failed` harus `retry` lalu `dispatch` ulang.
-
-## Troubleshooting
-
-**Worker selalu "waiting"**
-- Pastikan global `dispatch` tidak paused.
-- Cek `task list` apakah ada task dengan `dispatch_ready=true` dan tidak `paused`.
-
-**Task tidak bergerak**
-- Cek `task show` dan `task list` apakah status masih `queued`/`reviewed` (manual flow) atau `paused`.
-- Cek `dispatch_ready` dan `paused`.
-
-**Task gagal karena wordlist**
-- Pastikan path wordlist sama di Master dan Worker.
-- Pastikan file tidak kosong dan line tidak terlalu panjang.
-
-**Worker tidak muncul di list**
-- Pastikan Worker sudah berjalan dan bisa konek ke Master.
-- Cek port `50051` tidak diblok firewall.
-
-## Benchmark (Wordlist)
+### Jalankan test
 
 ```bash
-go test -bench . ./Common/wordlist
+go test ./...
 ```
 
-## Benchmark (Worker Hashing)
+### Regenerate protobuf
 
 ```bash
-go test -bench . ./Worker
-```
-
-## Development Notes
-
-Regenerate protobuf stubs:
-
-```bash
-PATH="$GOPATH/bin:$PATH" protoc \
-  --go_out=. --go_opt=paths=source_relative \
-  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+PATH="$(go env GOPATH)/bin:$PATH" \
+  protoc --go_out=. --go-grpc_out=. \
+  --go_opt=paths=source_relative \
+  --go-grpc_opt=paths=source_relative \
   cracker/cracker.proto
 ```
 
-## Demo Tips
+---
 
-- Mulai dengan `--keyspace 100000` dan `--chunk 1000`.
-- Jalankan beberapa Worker untuk percepatan.
-- Gunakan `worker list` untuk cek health.
-- Gunakan `task list` untuk monitoring progress.
+## 🧯 Troubleshooting
+
+* **Worker tidak bisa membaca wordlist**: pastikan path ada di mesin Worker
+* **No work available**: pastikan task `approved` dan `dispatch_ready=true`
+* **Connection error**: cek `MasterAddress` di `Worker/Worker.go` dan pastikan port `50051` terbuka. Pastikan juga Master dan Worker ada di jaringan yang sama dan tidak terblokir firewall.
+* **Help output**: gunakan `-h` di level mana pun, contoh `cerberus task add -h`
+
+<details>
+<summary><b>🔍 Checklist</b></summary>
+
+```text
+[ ] Master listening di :50051
+[ ] Worker bisa resolve IP/hostname Master
+[ ] Firewall membuka TCP 50051
+[ ] Tidak ada port forwarding yang salah
+```
+
+</details>
+
+---
+
+## 🤝 Kontribusi
+
+Kontribusi sangat welcome.
+
+1. Fork repo ini
+2. Buat branch: `feat/nama-fitur`
+3. Commit rapi dan jelas
+4. Buat Pull Request
+
+> Fokus kontribusi yang disarankan: observability (metrics/log), reliability (leases/retry), performa hash cracking, dan kualitas UX CLI.
+
+---
+
+## 📜 Lisensi
+
+Proyek ini dilisensikan di bawah **GNU General Public License v3.0 (GPL-3.0)**.
+Lihat berkas `LICENSE` untuk detail.
+
+---
+
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:36BCF7,100:8A2BE2&height=90&section=footer" width="100%" alt="footer" />
+
+</div>

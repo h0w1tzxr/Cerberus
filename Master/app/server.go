@@ -54,6 +54,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 
 		task := s.state.nextDispatchableTaskLocked(now)
 		if task != nil {
+			taskStarted := false
 			chunkSize := s.state.suggestChunkSizeLocked(task, workerID, in.GetCpuCores())
 			start, end, ok := s.state.allocateRangeLocked(task, chunkSize)
 			if !ok {
@@ -62,6 +63,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 			}
 			if task.Status == TaskStatusApproved {
 				task.Status = TaskStatusRunning
+				taskStarted = true
 			}
 			task.UpdatedAt = now
 
@@ -70,7 +72,9 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 				s.state.enqueueTaskLocked(task)
 			}
 			s.state.mu.Unlock()
-			logInfo("Assigned chunk %s for task %s to %s: %d-%d", chunk.TaskId, task.ID, workerID, start, end)
+			if taskStarted {
+				logInfo("Task %s started (mode=%s keyspace=%d)", task.ID, task.Mode, task.TotalKeyspace)
+			}
 			return chunk, nil
 		}
 
@@ -116,13 +120,23 @@ func (s *server) ReportProgress(ctx context.Context, in *pb.ProgressUpdate) (*pb
 }
 
 func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack, error) {
-	s.state.mu.Lock()
-	defer s.state.mu.Unlock()
-
+	if in == nil {
+		return &pb.Ack{Received: true}, nil
+	}
 	now := time.Now()
+	var (
+		taskEnded     bool
+		terminalMsg   string
+		terminalLevel uiEventLevel
+		leaderboard   []leaderboardEntry
+		terminalTask  string
+	)
+
+	s.state.mu.Lock()
 	s.state.updateWorkerLocked(in.WorkerId, 0, now)
 	lease, ok := s.state.activeChunks[in.TaskId]
 	if !ok {
+		s.state.mu.Unlock()
 		return &pb.Ack{Received: true}, nil
 	}
 
@@ -146,11 +160,16 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 	if avgRate <= 0 && processed > 0 && duration > 0 {
 		avgRate = float64(processed) / duration.Seconds()
 	}
+	overhead := now.Sub(lease.assignedAt) - duration
+	if overhead < 0 {
+		overhead = 0
+	}
 
 	info := s.state.workers[in.WorkerId]
 	if info != nil {
 		info.TotalProcessed += processed
 		info.TotalDuration += duration
+		info.TotalOverhead += overhead
 		info.CompletedChunks++
 		info.LastChunkID = in.TaskId
 		info.LastChunkRate = avgRate
@@ -168,7 +187,9 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			task.DispatchReady = false
 			task.UpdatedAt = now
 			s.state.clearTaskLeasesLocked(task.ID)
-			logError("Task %s failed by %s: %s", task.ID, in.WorkerId, in.ErrorMessage)
+			taskEnded = true
+			terminalLevel = uiEventError
+			terminalMsg = fmt.Sprintf("Task %s failed by %s: %s", task.ID, in.WorkerId, in.ErrorMessage)
 		} else {
 			task.Completed += lease.end - lease.start
 			if task.Completed > task.TotalKeyspace {
@@ -182,31 +203,50 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 				task.Status = TaskStatusCompleted
 				task.Completed = task.TotalKeyspace
 				task.DispatchReady = false
-				logSuccess("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
+				taskEnded = true
+				terminalLevel = uiEventSuccess
+				terminalMsg = fmt.Sprintf("Password found by %s for task %s: %s", in.WorkerId, task.ID, in.FoundPassword)
 			} else {
-				logInfo("Chunk %s completed by %s with no match (%d-%d)", in.TaskId, in.WorkerId, lease.start, lease.end)
 				if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
 					task.Status = TaskStatusCompleted
 					task.DispatchReady = false
-					logWarn("Task %s exhausted with no password found.", task.ID)
+					taskEnded = true
+					terminalLevel = uiEventWarn
+					terminalMsg = fmt.Sprintf("Task %s exhausted with no password found.", task.ID)
 				}
 			}
 		}
 		if s.ui != nil {
 			s.ui.UpdateProgress(task.ID, in.TaskId, task.Completed, task.TotalKeyspace)
 		}
+		if taskEnded {
+			terminalTask = task.ID
+			leaderboard = snapshotLeaderboardLocked(s.state)
+		}
 	}
 
 	if processed > 0 && duration > 0 {
 		s.state.updateWorkerRateLocked(in.WorkerId, processed, duration)
 	}
+	s.state.mu.Unlock()
 
-	if info != nil && info.CompletedChunks > 0 {
-		totalAvg := 0.0
-		if info.TotalDuration > 0 && info.TotalProcessed > 0 {
-			totalAvg = float64(info.TotalProcessed) / info.TotalDuration.Seconds()
+	if taskEnded {
+		switch terminalLevel {
+		case uiEventSuccess:
+			logSuccess("%s", terminalMsg)
+		case uiEventError:
+			logError("%s", terminalMsg)
+		case uiEventWarn:
+			logWarn("%s", terminalMsg)
+		default:
+			logInfo("%s", terminalMsg)
 		}
-		logInfo("Worker %s summary: chunks=%d processed=%d duration=%s avg=%s total_avg=%s", info.ID, info.CompletedChunks, info.TotalProcessed, formatDuration(info.TotalDuration), console.FormatHashRate(avgRate), console.FormatHashRate(totalAvg))
+		if s.ui != nil {
+			s.ui.SetEvent(terminalLevel, terminalMsg)
+		}
+		if len(leaderboard) > 0 {
+			logInfo("%s", formatLeaderboard(terminalTask, leaderboard))
+		}
 	}
 
 	return &pb.Ack{Received: true}, nil

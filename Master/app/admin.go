@@ -119,7 +119,20 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 	operator := strings.TrimSpace(req.Operator)
 
 	a.state.mu.Lock()
-	defer a.state.mu.Unlock()
+	var (
+		logMsg      string
+		logTaskID   string
+		leaderboard []leaderboardEntry
+	)
+	defer func() {
+		a.state.mu.Unlock()
+		if logMsg != "" {
+			logWarn("%s", logMsg)
+			if len(leaderboard) > 0 {
+				logInfo("%s", formatLeaderboard(logTaskID, leaderboard))
+			}
+		}
+	}()
 
 	task := a.state.tasks[taskID]
 	if task == nil {
@@ -161,6 +174,9 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		task.PendingRanges = nil
 		task.UpdatedAt = now
 		a.state.clearTaskLeasesLocked(task.ID)
+		logMsg = fmt.Sprintf("Task %s canceled by %s", task.ID, operator)
+		logTaskID = task.ID
+		leaderboard = snapshotLeaderboardLocked(a.state)
 	case pb.TaskAction_TASK_ACTION_RETRY:
 		if task.Status != TaskStatusFailed {
 			return nil, status.Errorf(codes.FailedPrecondition, "task %s is not failed", task.ID)

@@ -22,12 +22,13 @@ const (
 )
 
 type taskLease struct {
-	start      int64
-	end        int64
-	workerID   string
-	taskID     string
-	assignedAt time.Time
-	expiresAt  time.Time
+	start          int64
+	end            int64
+	workerID       string
+	taskID         string
+	assignedAt     time.Time
+	expiresAt      time.Time
+	lastProgressAt time.Time
 }
 
 type masterState struct {
@@ -130,12 +131,13 @@ func (s *masterState) nextDispatchableTaskLocked(now time.Time) *Task {
 func (s *masterState) assignChunkLocked(task *Task, start, end int64, workerID string, now time.Time) *pb.TaskChunk {
 	chunkID := fmt.Sprintf("chunk-%s-%d", workerID, now.UnixNano())
 	s.activeChunks[chunkID] = taskLease{
-		start:      start,
-		end:        end,
-		workerID:   workerID,
-		taskID:     task.ID,
-		assignedAt: now,
-		expiresAt:  now.Add(TaskTimeout),
+		start:          start,
+		end:            end,
+		workerID:       workerID,
+		taskID:         task.ID,
+		assignedAt:     now,
+		expiresAt:      now.Add(TaskTimeout),
+		lastProgressAt: now,
 	}
 	s.chunkProgress[chunkID] = 0
 
@@ -246,7 +248,7 @@ func (s *masterState) updateWorkerLocked(workerID string, cpuCores int32, now ti
 		info = &workerInfo{ID: workerID}
 		s.workers[workerID] = info
 	}
-	if cpuCores > 0 {
+	if cpuCores > 0 && (info.CPUCores == 0 || cpuCores > info.CPUCores) {
 		info.CPUCores = cpuCores
 	}
 	info.LastSeen = now
@@ -324,6 +326,7 @@ func (s *masterState) updateChunkProgressLocked(chunkID string, processed int64,
 	}
 	s.chunkProgress[chunkID] = processed
 	lease.expiresAt = now.Add(TaskTimeout)
+	lease.lastProgressAt = now
 	s.activeChunks[chunkID] = lease
 	s.updateWorkerRateLocked(lease.workerID, processed, now.Sub(lease.assignedAt))
 	task := s.tasks[lease.taskID]
