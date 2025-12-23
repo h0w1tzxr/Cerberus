@@ -4,21 +4,17 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
-	"text/tabwriter"
 	"time"
 
 	"cracker/Common/console"
 )
 
 type leaderboardEntry struct {
-	workerID   string
-	rate       float64
-	chunks     int64
-	tasks      int64
-	avgTaskDur time.Duration
-	efficiency float64
-	duration   time.Duration
-	overhead   time.Duration
+	workerID     string
+	tasks        int64
+	avgTaskDur   time.Duration
+	lastTaskDur  time.Duration
+	totalTaskDur time.Duration
 }
 
 func snapshotLeaderboardLocked(state *masterState) []leaderboardEntry {
@@ -30,28 +26,16 @@ func snapshotLeaderboardLocked(state *masterState) []leaderboardEntry {
 		if info == nil {
 			continue
 		}
-		rate := 0.0
-		if info.TotalDuration > 0 && info.TotalProcessed > 0 {
-			rate = float64(info.TotalProcessed) / info.TotalDuration.Seconds()
-		}
-		totalTime := info.TotalDuration + info.TotalOverhead
-		efficiency := 0.0
-		if totalTime > 0 {
-			efficiency = float64(info.TotalDuration) / float64(totalTime)
-		}
 		avgTaskDur := time.Duration(0)
 		if info.CompletedTasks > 0 {
 			avgTaskDur = time.Duration(int64(info.TotalTaskDuration) / info.CompletedTasks)
 		}
 		entries = append(entries, leaderboardEntry{
-			workerID:   info.ID,
-			rate:       rate,
-			chunks:     info.CompletedChunks,
-			tasks:      info.CompletedTasks,
-			avgTaskDur: avgTaskDur,
-			efficiency: efficiency,
-			duration:   info.TotalDuration,
-			overhead:   info.TotalOverhead,
+			workerID:     info.ID,
+			tasks:        info.CompletedTasks,
+			avgTaskDur:   avgTaskDur,
+			lastTaskDur:  info.LastTaskDuration,
+			totalTaskDur: info.TotalTaskDuration,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -67,35 +51,53 @@ func snapshotLeaderboardLocked(state *masterState) []leaderboardEntry {
 			}
 			return entries[i].avgTaskDur < entries[j].avgTaskDur
 		}
-		return entries[i].rate > entries[j].rate
+		return entries[i].totalTaskDur < entries[j].totalTaskDur
 	})
 	return entries
 }
 
-func formatLeaderboard(taskID string, entries []leaderboardEntry) string {
-	if taskID == "" {
-		taskID = "-"
-	}
+const (
+	leaderboardWorkerWidth  = 12
+	leaderboardTasksWidth   = 5
+	leaderboardAvgMsWidth   = 12
+	leaderboardLastMsWidth  = 13
+	leaderboardTotalMsWidth = 14
+)
+
+func formatLeaderboard(entries []leaderboardEntry) string {
 	var buf bytes.Buffer
 	sep := console.SeparatorLine()
 	fmt.Fprintf(&buf, "%s\n", sep)
-	fmt.Fprintf(&buf, "leaderboard (task=%s)\n", taskID)
-	writer := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "WORKER\tTASKS\tAVG_TASK\tTHROUGHPUT\tCHUNKS\tEFFICIENCY\tCOMPUTE\tOVERHEAD")
+	fmt.Fprintln(&buf, "LEADERBOARD")
+	header := fmt.Sprintf("%s %s %s %s %s",
+		padRight("WORKER", leaderboardWorkerWidth),
+		padLeft("TASKS", leaderboardTasksWidth),
+		padLeft("AVG_TASK_MS", leaderboardAvgMsWidth),
+		padLeft("LAST_TASK_MS", leaderboardLastMsWidth),
+		padLeft("TOTAL_TASK_MS", leaderboardTotalMsWidth),
+	)
+	fmt.Fprintln(&buf, header)
 	for _, entry := range entries {
-		effLabel := fmt.Sprintf("%.1f%%", entry.efficiency*100)
-		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			entry.workerID,
-			entry.tasks,
-			formatDuration(entry.avgTaskDur),
-			console.FormatHashRate(entry.rate),
-			entry.chunks,
-			effLabel,
-			formatDuration(entry.duration),
-			formatDuration(entry.overhead),
+		workerLabel := padRight(shortLabel(entry.workerID, leaderboardWorkerWidth), leaderboardWorkerWidth)
+		taskLabel := padLeft(fmt.Sprintf("%d", entry.tasks), leaderboardTasksWidth)
+		avgLabel := padLeft(formatDurationMs(entry.avgTaskDur), leaderboardAvgMsWidth)
+		lastLabel := padLeft(formatDurationMs(entry.lastTaskDur), leaderboardLastMsWidth)
+		totalLabel := padLeft(formatDurationMs(entry.totalTaskDur), leaderboardTotalMsWidth)
+		fmt.Fprintf(&buf, "%s %s %s %s %s\n",
+			workerLabel,
+			taskLabel,
+			avgLabel,
+			lastLabel,
+			totalLabel,
 		)
 	}
-	_ = writer.Flush()
 	fmt.Fprintf(&buf, "%s\n", sep)
 	return buf.String()
+}
+
+func formatDurationMs(duration time.Duration) string {
+	if duration <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%dms", duration.Milliseconds())
 }

@@ -18,7 +18,7 @@
   <a href="https://github.com/h0w1tzxr/Cerberus/blob/main/LICENSE">
     <img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-blue.svg" />
   </a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white" />
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" />
   <img alt="gRPC" src="https://img.shields.io/badge/gRPC-enabled-2EA9FF?logo=grpc&logoColor=white" />
   <img alt="CLI" src="https://img.shields.io/badge/UX-CLI--first-222222" />
   <a href="https://github.com/h0w1tzxr/Cerberus/issues">
@@ -140,16 +140,17 @@ const MasterAddress = "<IP_MASTER>:50051"
 go run ./Worker
 ```
 
-### 5) Tambah task di Terminal Master ke 2
+### 5) Tambah task lewat prompt `cerberus>`
 
 ```bash
-go run ./Master task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
+task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
 ```
 
 <details>
 <summary><b>✅ Tips</b> (klik untuk buka)</summary>
 
 * Mulailah dengan `--keyspace` kecil dulu untuk validasi end-to-end.
+* Kamu juga bisa menjalankan CLI dari terminal lain: `go run ./Master task add ...`
 
 </details>
 
@@ -176,6 +177,7 @@ Cerberus memakai CLI linear yang nyaman untuk terminal:
 ## 🧪 CLI Usage
 
 Binary **Master** akan menjadi CLI saat diberi argumen.
+Jika dijalankan tanpa argumen, Master menyalakan server + console operator di prompt `cerberus>`.
 Jika memakai alamat default lokal dan server belum berjalan, Master akan **auto-start**.
 
 ### Bantuan global
@@ -221,6 +223,12 @@ go run ./Master task add -h
 go run ./Master task list -h
 ```
 
+### 💾 Output file (-o)
+
+* Gunakan `-o` / `--output` pada `task add` atau `task add-batch`.
+* Output disusun **satu baris per hash** sesuai urutan input batch.
+* Isi baris adalah **password hasil crack**, atau kosong jika tidak ditemukan.
+
 ---
 
 ## 🔁 Lifecycle Task
@@ -261,6 +269,7 @@ go run ./Master task add \
   --mode md5 \
   --keyspace 100000 \
   --chunk 1000 \
+  -o cracked.txt \
   --priority 5 \
   --max-retries 3
 ```
@@ -284,7 +293,7 @@ go run ./Master task add \
 <summary><b>📦 Add batch</b></summary>
 
 ```bash
-go run ./Master task add-batch --file hashes.txt --mode md5 --keyspace 100000 --chunk 1000
+go run ./Master task add-batch --file hashes.txt --mode md5 --keyspace 100000 --chunk 1000 -o cracked.txt
 ```
 
 </details>
@@ -366,9 +375,9 @@ Worker mengirim telemetri per chunk saat selesai:
 
 Master mengagregasi dan menampilkan:
 
-* Hasil per chunk
-* Ringkasan per worker saat selesai
-* Ringkasan per worker saat stale/disconnect
+* Status worker + chunk aktif di inline status
+* Leaderboard akhir: jumlah task per worker, rata-rata durasi task (ms), durasi task terakhir (ms), total durasi task (ms)
+* Health/stale worker tetap terlihat di status, bukan di leaderboard
 
 ---
 
@@ -392,7 +401,7 @@ Master mengagregasi dan menampilkan:
 
 ```mermaid
 flowchart LR
-  subgraph OP["👤 Master (2nd CLI) / Operator CLI"]
+  subgraph OP["👤 Operator Console (single terminal)"]
     direction TB
     OP1["🛠️ Buat Task"]
     OP3["📋 Kelola Task (list/show/pause/resume/cancel)"]

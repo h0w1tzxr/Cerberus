@@ -117,7 +117,6 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 		terminalMsg       string
 		terminalLevel     uiEventLevel
 		leaderboard       []leaderboardEntry
-		terminalTask      string
 		durationLabel     string
 		taskDurationValue time.Duration
 		outputWrite       *outputWrite
@@ -228,7 +227,6 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			s.ui.UpdateProgress(task.ID, in.TaskId, task.Completed, task.TotalKeyspace)
 		}
 		if taskEnded {
-			terminalTask = task.ID
 			if info != nil {
 				info.CompletedTasks++
 				info.TotalTaskDuration += taskDurationValue
@@ -268,7 +266,7 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			s.ui.SetEvent(terminalLevel, terminalMsg)
 		}
 		if len(leaderboard) > 0 {
-			logInfo("%s", formatLeaderboard(terminalTask, leaderboard))
+			logBlockInfo(formatLeaderboard(leaderboard))
 		}
 	}
 

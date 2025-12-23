@@ -141,7 +141,6 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 	a.state.mu.Lock()
 	var (
 		logMsg      string
-		logTaskID   string
 		leaderboard []leaderboardEntry
 		outputWrite *outputWrite
 	)
@@ -155,7 +154,7 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		if logMsg != "" {
 			logWarn("%s", logMsg)
 			if len(leaderboard) > 0 {
-				logInfo("%s", formatLeaderboard(logTaskID, leaderboard))
+				logBlockInfo(formatLeaderboard(leaderboard))
 			}
 		}
 	}()
@@ -205,7 +204,6 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		a.state.clearTaskLeasesLocked(task.ID)
 		outputWrite = a.state.recordTaskOutputLocked(task)
 		logMsg = fmt.Sprintf("Task %s canceled by %s", task.ID, operator)
-		logTaskID = task.ID
 		if !a.state.leaderboardLogged && a.state.allTasksTerminalLocked() && len(a.state.activeChunks) == 0 {
 			leaderboard = snapshotLeaderboardLocked(a.state)
 			a.state.leaderboardLogged = true
