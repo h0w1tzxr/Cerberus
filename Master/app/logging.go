@@ -3,10 +3,18 @@ package master
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"cracker/Common/console"
 )
+
+var verboseLogging = parseVerboseLogging()
+
+func parseVerboseLogging() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("CERBERUS_VERBOSE")))
+	return value == "1" || value == "true" || value == "yes"
+}
 
 func logInfo(format string, args ...interface{}) {
 	log.Printf("%s %s", console.TagInfo(), fmt.Sprintf(format, args...))
@@ -22,6 +30,13 @@ func logError(format string, args ...interface{}) {
 
 func logSuccess(format string, args ...interface{}) {
 	log.Printf("%s %s", console.TagSuccess(), fmt.Sprintf(format, args...))
+}
+
+func logDebug(format string, args ...interface{}) {
+	if !verboseLogging {
+		return
+	}
+	log.Printf("%s %s", console.TagInfo(), fmt.Sprintf(format, args...))
 }
 
 func logBlockInfo(block string) {

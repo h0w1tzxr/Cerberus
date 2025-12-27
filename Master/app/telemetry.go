@@ -15,6 +15,7 @@ const masterRenderInterval = time.Second / 30
 
 const (
 	dashboardProgressBarWidth = 12
+	summaryProgressBarWidth   = 28
 	workerStallAfter          = 6 * time.Second
 	masterMaxWorkersDisplay   = 12
 	masterWorkerIDWidth       = 10
@@ -49,6 +50,8 @@ type masterUI struct {
 	total     atomic.Int64
 	eventMu   sync.Mutex
 	event     uiEvent
+	etaMu     sync.Mutex
+	etaValue  time.Duration
 }
 
 func newMasterUI(state *masterState) *masterUI {
@@ -87,11 +90,7 @@ func (ui *masterUI) StatusLine() string {
 	if ui == nil {
 		return ""
 	}
-	taskID, _ := ui.taskID.Load().(string)
 	chunkID, _ := ui.chunkID.Load().(string)
-	processed := ui.processed.Load()
-	total := ui.total.Load()
-	percent := console.FormatPercent(processed, total)
 
 	now := time.Now()
 	workerCount := 0
@@ -99,12 +98,14 @@ func (ui *masterUI) StatusLine() string {
 	totalRate := 0.0
 	dispatchPaused := false
 	snapshots := []workerSnapshot{}
+	summary := workloadSummary{}
 
 	if ui.state != nil {
 		ui.state.mu.Lock()
 		dispatchPaused = ui.state.dispatchPaused
 		workerCount = len(ui.state.workers)
 		snapshots = snapshotWorkersLocked(ui.state, now)
+		summary = ui.state.workloadSummaryLocked()
 		for _, snapshot := range snapshots {
 			totalRate += snapshot.avgRate
 			if snapshot.activeChunks > 0 {
@@ -114,11 +115,18 @@ func (ui *masterUI) StatusLine() string {
 		ui.state.mu.Unlock()
 	}
 
-	headerTop := fmt.Sprintf("%s master | rate=%s | task=%s | progress=%s", console.TagInfo(), console.FormatHashRate(totalRate), taskID, percent)
+	overallPercent := console.FormatPercent(summary.completed, summary.total)
+	headerTop := fmt.Sprintf("%s master | rate=%s | tasks=%d | progress=%s", console.TagInfo(), console.FormatHashRate(totalRate), summary.totalTasks, overallPercent)
 	chunkLabel := formatChunkHeader(chunkID)
 	headerBottom := fmt.Sprintf("chunk=%s | workers=%d | active=%d | dispatch=%s", chunkLabel, workerCount, activeWorkers, dispatchLabel(dispatchPaused))
+	progressLine := ui.summaryProgressLine(summary, totalRate, dispatchPaused)
+	metricsLine := ui.summaryMetricsLine(summary, totalRate)
 
-	lines := []string{headerTop, headerBottom, separatorLine(), workerHeaderLine()}
+	lines := []string{headerTop, headerBottom, progressLine, metricsLine}
+	if dispatchPaused {
+		lines = append(lines, console.ColorWarn("PAUSED - Press [r] to Resume"))
+	}
+	lines = append(lines, separatorLine(), workerHeaderLine())
 	if len(snapshots) == 0 {
 		lines = append(lines, console.ColorMuted("no workers"))
 	} else {
@@ -324,6 +332,85 @@ func colorEvent(level uiEventLevel, message string) string {
 		return console.ColorWarn(message)
 	default:
 		return console.ColorInfo(message)
+	}
+}
+
+func (ui *masterUI) summaryProgressLine(summary workloadSummary, totalRate float64, dispatchPaused bool) string {
+	state := console.ProgressStateIdle
+	if summary.total > 0 {
+		if summary.completed >= summary.total {
+			state = console.ProgressStateCompleted
+		} else if dispatchPaused {
+			state = console.ProgressStateStalled
+		} else {
+			state = console.ProgressStateProcessing
+		}
+	}
+	bar := console.FormatProgressBarPointer(summary.completed, summary.total, summaryProgressBarWidth, state)
+	return fmt.Sprintf("Batch %s", bar)
+}
+
+func (ui *masterUI) summaryMetricsLine(summary workloadSummary, totalRate float64) string {
+	speedLabel := console.FormatHashRate(totalRate)
+	quality := speedQuality(totalRate)
+	scope := formatScope(summary.total)
+	eta := "-"
+	if totalRate > 0 && summary.remaining > 0 {
+		estimate := time.Duration(float64(summary.remaining) / totalRate * float64(time.Second))
+		smoothed := ui.smoothedETA(estimate)
+		eta = formatDuration(smoothed)
+	}
+	return fmt.Sprintf("Speed: %s (%s) | Scope: %s | Est Finish: %s", speedLabel, quality, scope, eta)
+}
+
+func (ui *masterUI) smoothedETA(estimate time.Duration) time.Duration {
+	if estimate <= 0 {
+		ui.etaMu.Lock()
+		ui.etaValue = 0
+		ui.etaMu.Unlock()
+		return 0
+	}
+	const smoothing = 0.2
+	ui.etaMu.Lock()
+	if ui.etaValue <= 0 {
+		ui.etaValue = estimate
+	} else {
+		ui.etaValue = time.Duration(float64(ui.etaValue)*(1-smoothing) + float64(estimate)*smoothing)
+	}
+	value := ui.etaValue
+	ui.etaMu.Unlock()
+	return value
+}
+
+func formatScope(total int64) string {
+	if total <= 0 {
+		return "-"
+	}
+	if total >= 1_000_000 {
+		return fmt.Sprintf("~%.2fM candidates", float64(total)/1_000_000)
+	}
+	if total >= 1_000 {
+		return fmt.Sprintf("~%.1fk candidates", float64(total)/1_000)
+	}
+	return fmt.Sprintf("~%d candidates", total)
+}
+
+func speedQuality(rate float64) string {
+	switch {
+	case rate >= 1e9:
+		return "Blazing"
+	case rate >= 1e8:
+		return "Very Fast"
+	case rate >= 1e7:
+		return "Fast"
+	case rate >= 1e6:
+		return "Good"
+	case rate >= 1e5:
+		return "Moderate"
+	case rate > 0:
+		return "Slow"
+	default:
+		return "Idle"
 	}
 }
 

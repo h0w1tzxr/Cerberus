@@ -1,10 +1,6 @@
 package master
 
-import (
-	"time"
-
-	"cracker/Common/console"
-)
+import "time"
 
 type workerMonitor struct {
 	state  *masterState
@@ -12,11 +8,7 @@ type workerMonitor struct {
 }
 
 type workerSummary struct {
-	id        string
-	chunks    int64
-	processed int64
-	duration  time.Duration
-	avgRate   float64
+	id string
 }
 
 func newWorkerMonitor(state *masterState) *workerMonitor {
@@ -46,22 +38,14 @@ func (m *workerMonitor) Start() {
 					if staleLogged[id] {
 						continue
 					}
-					avgRate := 0.0
-					if info.TotalDuration > 0 && info.TotalProcessed > 0 {
-						avgRate = float64(info.TotalProcessed) / info.TotalDuration.Seconds()
-					}
 					summaries = append(summaries, workerSummary{
-						id:        id,
-						chunks:    info.CompletedChunks,
-						processed: info.TotalProcessed,
-						duration:  info.TotalDuration,
-						avgRate:   avgRate,
+						id: id,
 					})
 					staleLogged[id] = true
 				}
 				m.state.mu.Unlock()
 				for _, summary := range summaries {
-					logWarn("Worker %s disconnected. chunks=%d processed=%d duration=%s avg=%s", summary.id, summary.chunks, summary.processed, formatDuration(summary.duration), console.FormatHashRate(summary.avgRate))
+					logError("Worker Disconnected: %s", summary.id)
 				}
 			case <-m.stopCh:
 				return

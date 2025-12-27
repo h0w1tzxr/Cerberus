@@ -140,9 +140,10 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 
 	a.state.mu.Lock()
 	var (
-		logMsg      string
-		leaderboard []leaderboardEntry
-		outputWrite *outputWrite
+		logMsg        string
+		leaderboard   []leaderboardEntry
+		sessionReport string
+		outputWrite   *outputWrite
 	)
 	defer func() {
 		a.state.mu.Unlock()
@@ -153,6 +154,9 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		}
 		if logMsg != "" {
 			logWarn("%s", logMsg)
+			if sessionReport != "" {
+				logBlockInfo(sessionReport)
+			}
 			if len(leaderboard) > 0 {
 				logBlockInfo(formatLeaderboard(leaderboard))
 			}
@@ -206,6 +210,7 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		logMsg = fmt.Sprintf("Task %s canceled by %s", task.ID, operator)
 		if !a.state.leaderboardLogged && a.state.allTasksTerminalLocked() && len(a.state.activeChunks) == 0 {
 			leaderboard = snapshotLeaderboardLocked(a.state)
+			sessionReport = formatSessionReportLocked(a.state)
 			a.state.leaderboardLogged = true
 		}
 	case pb.TaskAction_TASK_ACTION_RETRY:

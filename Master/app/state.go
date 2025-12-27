@@ -31,21 +31,30 @@ type taskLease struct {
 	lastProgressAt time.Time
 }
 
+type workloadSummary struct {
+	total      int64
+	completed  int64
+	remaining  int64
+	active     int
+	totalTasks int
+}
+
 type masterState struct {
-	mu             sync.Mutex
-	tasks          map[string]*Task
-	queue          taskQueue
-	activeChunks   map[string]taskLease
-	chunkProgress  map[string]int64
-	workers        map[string]*workerInfo
-	dispatchPaused bool
-	nextTaskSeq    int64
-	nextQueueSeq   int64
-	nextChunkSeq   int64
-	nextBatchSeq   int64
+	mu                sync.Mutex
+	tasks             map[string]*Task
+	queue             taskQueue
+	activeChunks      map[string]taskLease
+	chunkProgress     map[string]int64
+	workers           map[string]*workerInfo
+	dispatchPaused    bool
+	shutdownRequested bool
+	nextTaskSeq       int64
+	nextQueueSeq      int64
+	nextChunkSeq      int64
+	nextBatchSeq      int64
 	leaderboardLogged bool
-	wordlists      *wordlist.Cache
-	batchOutputs   map[string]*batchOutput
+	wordlists         *wordlist.Cache
+	batchOutputs      map[string]*batchOutput
 }
 
 func newMasterState() *masterState {
@@ -404,5 +413,47 @@ func (s *masterState) allTasksTerminalLocked() bool {
 			return false
 		}
 	}
+	return true
+}
+
+func (s *masterState) workloadSummaryLocked() workloadSummary {
+	summary := workloadSummary{}
+	for _, task := range s.tasks {
+		if task == nil {
+			continue
+		}
+		summary.totalTasks++
+		if task.TotalKeyspace > 0 {
+			summary.total += task.TotalKeyspace
+		}
+		if task.isTerminal() {
+			summary.completed += task.Completed
+			continue
+		}
+		summary.active++
+		inflight := s.inflightProgressLocked(task.ID)
+		summary.completed += task.Completed + inflight
+	}
+	if summary.completed > summary.total {
+		summary.completed = summary.total
+	}
+	if summary.total >= summary.completed {
+		summary.remaining = summary.total - summary.completed
+	}
+	return summary
+}
+
+func (s *masterState) setDispatchPaused(paused bool) {
+	s.mu.Lock()
+	s.dispatchPaused = paused
+	s.mu.Unlock()
+}
+
+func (s *masterState) requestShutdownLocked() bool {
+	if s.shutdownRequested {
+		return false
+	}
+	s.shutdownRequested = true
+	s.dispatchPaused = true
 	return true
 }

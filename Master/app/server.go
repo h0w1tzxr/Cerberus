@@ -76,7 +76,7 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 			}
 			s.state.mu.Unlock()
 			if taskStarted {
-				logInfo("Task %s started (mode=%s keyspace=%d)", task.ID, task.Mode, task.TotalKeyspace)
+				logDebug("Task %s started (mode=%s keyspace=%d)", task.ID, task.Mode, task.TotalKeyspace)
 			}
 			return chunk, nil
 		}
@@ -117,7 +117,7 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 		terminalMsg       string
 		terminalLevel     uiEventLevel
 		leaderboard       []leaderboardEntry
-		durationLabel     string
+		sessionReport     string
 		taskDurationValue time.Duration
 		outputWrite       *outputWrite
 	)
@@ -183,8 +183,7 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			taskEnded = true
 			terminalLevel = uiEventError
 			taskDurationValue = taskDuration(task, now)
-			durationLabel = formatDuration(taskDurationValue)
-			terminalMsg = fmt.Sprintf("Task %s failed by %s: %s (duration=%s)", task.ID, in.WorkerId, in.ErrorMessage, durationLabel)
+			terminalMsg = fmt.Sprintf("Task Failed: %s (%s)", task.ID, in.ErrorMessage)
 		} else {
 			task.Completed += lease.end - lease.start
 			if task.Completed > task.TotalKeyspace {
@@ -206,20 +205,18 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 					task.CompletedAt = now
 				}
 				taskDurationValue = taskDuration(task, now)
-				durationLabel = formatDuration(taskDurationValue)
-				terminalMsg = fmt.Sprintf("Password found by %s for task %s: %s (duration=%s)", in.WorkerId, task.ID, in.FoundPassword, durationLabel)
+				terminalMsg = fmt.Sprintf("Password Found: %s (task %s)", in.FoundPassword, task.ID)
 			} else {
 				if task.Completed >= task.TotalKeyspace && !s.state.hasActiveChunksLocked(task.ID) && len(task.PendingRanges) == 0 {
 					task.Status = TaskStatusCompleted
 					task.DispatchReady = false
 					taskEnded = true
-					terminalLevel = uiEventWarn
+					terminalLevel = uiEventInfo
 					if task.CompletedAt.IsZero() {
 						task.CompletedAt = now
 					}
 					taskDurationValue = taskDuration(task, now)
-					durationLabel = formatDuration(taskDurationValue)
-					terminalMsg = fmt.Sprintf("Task %s exhausted with no password found. (duration=%s)", task.ID, durationLabel)
+					terminalMsg = fmt.Sprintf("Task Complete: %s (no password)", task.ID)
 				}
 			}
 		}
@@ -235,6 +232,7 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 			outputWrite = s.state.recordTaskOutputLocked(task)
 			if !s.state.leaderboardLogged && s.state.allTasksTerminalLocked() && len(s.state.activeChunks) == 0 {
 				leaderboard = snapshotLeaderboardLocked(s.state)
+				sessionReport = formatSessionReportLocked(s.state)
 				s.state.leaderboardLogged = true
 			}
 		}
@@ -264,6 +262,9 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 		}
 		if s.ui != nil {
 			s.ui.SetEvent(terminalLevel, terminalMsg)
+		}
+		if sessionReport != "" {
+			logBlockInfo(sessionReport)
 		}
 		if len(leaderboard) > 0 {
 			logBlockInfo(formatLeaderboard(leaderboard))
@@ -305,8 +306,10 @@ func runServer(interactive bool) error {
 	logInfo("Master Hash Cracker running on port %s", Port)
 	logInfo("Ready for Workers...")
 
+	startShutdownWatcher(s, state, ui)
+
 	if interactive {
-		startInteractiveConsole(s, renderLoop, renderer, ui.StatusLine)
+		startInteractiveConsole(s, renderLoop, renderer, ui, state)
 	}
 
 	if err := s.Serve(lis); err != nil {
@@ -316,4 +319,31 @@ func runServer(interactive bool) error {
 		return fmt.Errorf("failed to serve: %w", err)
 	}
 	return nil
+}
+
+func startShutdownWatcher(server *grpc.Server, state *masterState, ui *masterUI) {
+	if server == nil || state == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			state.mu.Lock()
+			requested := state.shutdownRequested
+			active := len(state.activeChunks)
+			state.mu.Unlock()
+			if !requested {
+				continue
+			}
+			if active == 0 {
+				logInfo("Shutdown complete.")
+				if ui != nil {
+					ui.SetEvent(uiEventInfo, "Shutdown complete")
+				}
+				server.GracefulStop()
+				return
+			}
+		}
+	}()
 }
