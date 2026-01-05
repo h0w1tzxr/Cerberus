@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -14,15 +15,15 @@ import (
 	"time"
 
 	"cracker/Common/console"
+	"cracker/Common/security"
 	"cracker/Common/wordlist"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 )
 
-// Ganti IP ini dengan IP Laptop Master saat Demo
-const MasterAddress = "10.110.1.43:50051"
+const defaultMasterAddress = "localhost:50051"
 
 var wordlistCache = wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes)
 
@@ -37,6 +38,18 @@ const (
 )
 
 func main() {
+	addrFlag := flag.String("addr", "", "master gRPC address")
+	tokenFlag := flag.String("token", "", "worker auth token")
+	tlsCAFlag := flag.String("tls-ca", "", "path to TLS CA certificate")
+	tlsServerNameFlag := flag.String("tls-server-name", "", "TLS server name override")
+	flag.Parse()
+
+	cfg, err := resolveWorkerConfig(*addrFlag, *tokenFlag, *tlsCAFlag, *tlsServerNameFlag)
+	if err != nil {
+		logError("Config error: %v", err)
+		return
+	}
+
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = fmt.Sprintf("%d", time.Now().Unix())
@@ -49,7 +62,7 @@ func main() {
 	if slotCount < 1 {
 		slotCount = 1
 	}
-	telemetry := newWorkerTelemetry(workerID, MasterAddress, cpuCores, slotCount)
+	telemetry := newWorkerTelemetry(workerID, cfg.addr, cpuCores, slotCount)
 	renderer := console.NewStickyRenderer(os.Stdout)
 	log.SetOutput(renderer)
 	renderLoop := console.NewRenderLoop(renderer, renderInterval, telemetry.StatusLine)
@@ -57,15 +70,24 @@ func main() {
 	defer renderLoop.Stop()
 
 	telemetry.SetGlobalState("starting")
-	logInfo("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, MasterAddress)
+	logInfo("Worker Starting: %s (cores=%d, master=%s)", workerID, cpuCores, cfg.addr)
 
 	// 1. Connect ke Master via gRPC
 	telemetry.SetGlobalState("connecting")
-	conn, err := grpc.Dial(MasterAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	tlsConfig, err := security.LoadClientTLSConfig(cfg.tlsCA, cfg.tlsServerName)
+	if err != nil {
+		logError("TLS config error: %v", err)
+		return
+	}
+	conn, err := grpc.NewClient(cfg.addr,
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		grpc.WithPerRPCCredentials(security.TokenCredential{Token: cfg.token}),
+	)
 	if err != nil {
 		logError("Did not connect: %v", err)
 		return
 	}
+	conn.Connect()
 	defer conn.Close()
 	c := pb.NewCrackerServiceClient(conn)
 
@@ -74,7 +96,7 @@ func main() {
 		return
 	}
 	telemetry.SetGlobalState("connected")
-	logInfo("Connected to master: %s", MasterAddress)
+	logInfo("Connected to master: %s", cfg.addr)
 
 	tracker := newConnectionTracker(true)
 	var wg sync.WaitGroup
@@ -87,6 +109,52 @@ func main() {
 		}()
 	}
 	wg.Wait()
+}
+
+type workerConfig struct {
+	addr          string
+	token         string
+	tlsCA         string
+	tlsServerName string
+}
+
+func resolveWorkerConfig(addr, token, tlsCA, tlsServerName string) (workerConfig, error) {
+	if addr == "" {
+		addr = strings.TrimSpace(os.Getenv(security.EnvMasterAddr))
+	}
+	if addr == "" {
+		addr = defaultMasterAddress
+	}
+	if tlsCA == "" {
+		tlsCA = strings.TrimSpace(os.Getenv(security.EnvTLSCA))
+	}
+	if tlsCA == "" {
+		if defaultCert, _, _, err := security.DefaultCertPaths(); err == nil && security.FileExists(defaultCert) {
+			tlsCA = defaultCert
+		}
+	}
+	if tlsServerName == "" {
+		tlsServerName = strings.TrimSpace(os.Getenv(security.EnvTLSServerName))
+	}
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv(security.EnvWorkerToken))
+		if token == "" {
+			if tokenPath, err := security.DefaultTokenPath(); err == nil {
+				if tokens, err := security.LoadTokens(tokenPath); err == nil {
+					token = tokens.Worker
+				}
+			}
+		}
+	}
+	if token == "" {
+		return workerConfig{}, fmt.Errorf("worker token is required; set %s or use the generated tokens file", security.EnvWorkerToken)
+	}
+	return workerConfig{
+		addr:          addr,
+		token:         token,
+		tlsCA:         tlsCA,
+		tlsServerName: tlsServerName,
+	}, nil
 }
 
 type prefetchResult struct {

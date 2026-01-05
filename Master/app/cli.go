@@ -15,7 +15,6 @@ import (
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -36,38 +35,54 @@ func handleCLIWithWriter(args []string, out io.Writer) error {
 	}
 
 	args = normalizeArgs(args)
-	fs := flag.NewFlagSet("cerberus", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	addr := fs.String("addr", defaultAdminAddress, "master gRPC address")
-	operator := fs.String("operator", defaultOperator(), "operator id")
-	if err := fs.Parse(args); err != nil {
+	cfg, operator, remaining, err := parseGlobalFlags(args)
+	if err != nil {
 		return err
 	}
-
-	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New("missing command (task|worker|dispatch)")
 	}
 
 	switch remaining[0] {
 	case "task":
-		return handleTaskCLI(*addr, *operator, remaining[1:], out)
+		return handleTaskCLI(cfg, operator, remaining[1:], out)
 	case "worker":
-		return handleWorkerCLI(*addr, remaining[1:], out)
+		return handleWorkerCLI(cfg, remaining[1:], out)
 	case "dispatch":
-		return handleDispatchCLI(*addr, *operator, remaining[1:], out)
+		return handleDispatchCLI(cfg, operator, remaining[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", remaining[0])
 	}
 }
 
-func handleTaskCLI(addr, operator string, args []string, out io.Writer) error {
+func parseGlobalFlags(args []string) (clientConfig, string, []string, error) {
+	fs := flag.NewFlagSet("cerberus", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	addr := fs.String("addr", defaultAdminAddress, "master gRPC address")
+	operator := fs.String("operator", defaultOperator(), "operator id")
+	token := fs.String("token", "", "admin auth token")
+	tlsCA := fs.String("tls-ca", "", "path to TLS CA certificate")
+	tlsServerName := fs.String("tls-server-name", "", "TLS server name override")
+	if err := fs.Parse(args); err != nil {
+		return clientConfig{}, "", nil, err
+	}
+
+	cfg := clientConfig{
+		addr:          strings.TrimSpace(*addr),
+		token:         strings.TrimSpace(*token),
+		tlsCA:         strings.TrimSpace(*tlsCA),
+		tlsServerName: strings.TrimSpace(*tlsServerName),
+	}
+	return cfg, *operator, fs.Args(), nil
+}
+
+func handleTaskCLI(cfg clientConfig, operator string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing task subcommand")
 	}
 	args[0] = normalizeTaskSubcommand(args[0])
 
-	client, conn, err := dialAdmin(addr)
+	client, conn, err := dialAdmin(cfg)
 	if err != nil {
 		return err
 	}
@@ -103,7 +118,7 @@ func handleTaskCLI(addr, operator string, args []string, out io.Writer) error {
 	}
 }
 
-func handleWorkerCLI(addr string, args []string, out io.Writer) error {
+func handleWorkerCLI(cfg clientConfig, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing worker subcommand")
 	}
@@ -114,7 +129,7 @@ func handleWorkerCLI(addr string, args []string, out io.Writer) error {
 		return fmt.Errorf("unknown worker subcommand %q", args[0])
 	}
 
-	client, conn, err := dialAdmin(addr)
+	client, conn, err := dialAdmin(cfg)
 	if err != nil {
 		return err
 	}
@@ -138,7 +153,7 @@ func handleWorkerCLI(addr string, args []string, out io.Writer) error {
 	return nil
 }
 
-func handleDispatchCLI(addr, operator string, args []string, out io.Writer) error {
+func handleDispatchCLI(cfg clientConfig, operator string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("missing dispatch subcommand")
 	}
@@ -153,7 +168,7 @@ func handleDispatchCLI(addr, operator string, args []string, out io.Writer) erro
 		return fmt.Errorf("unknown dispatch subcommand %q", args[0])
 	}
 
-	client, conn, err := dialAdmin(addr)
+	client, conn, err := dialAdmin(cfg)
 	if err != nil {
 		return err
 	}
@@ -443,11 +458,16 @@ func taskShow(client pb.CrackerAdminClient, args []string, out io.Writer) error 
 	return nil
 }
 
-func dialAdmin(addr string) (pb.CrackerAdminClient, *grpc.ClientConn, error) {
-	conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func dialAdmin(cfg clientConfig) (pb.CrackerAdminClient, *grpc.ClientConn, error) {
+	options, err := clientDialOptions(cfg, true)
 	if err != nil {
 		return nil, nil, err
 	}
+	conn, err := grpc.NewClient(cfg.addr, options...)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn.Connect()
 	return pb.NewCrackerAdminClient(conn), conn, nil
 }
 
@@ -665,13 +685,19 @@ func normalizeArgs(args []string) []string {
 
 func isGlobalFlag(arg string) bool {
 	switch arg {
-	case "--addr", "-addr", "--operator", "-operator":
+	case "--addr", "-addr", "--operator", "-operator", "--token", "-token", "--tls-ca", "-tls-ca", "--tls-server-name", "-tls-server-name":
 		return true
 	}
 	return strings.HasPrefix(arg, "--addr=") ||
 		strings.HasPrefix(arg, "-addr=") ||
 		strings.HasPrefix(arg, "--operator=") ||
-		strings.HasPrefix(arg, "-operator=")
+		strings.HasPrefix(arg, "-operator=") ||
+		strings.HasPrefix(arg, "--token=") ||
+		strings.HasPrefix(arg, "-token=") ||
+		strings.HasPrefix(arg, "--tls-ca=") ||
+		strings.HasPrefix(arg, "-tls-ca=") ||
+		strings.HasPrefix(arg, "--tls-server-name=") ||
+		strings.HasPrefix(arg, "-tls-server-name=")
 }
 
 func normalizeTaskSubcommand(value string) string {

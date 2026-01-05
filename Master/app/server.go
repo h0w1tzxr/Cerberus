@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"cracker/Common/console"
+	"cracker/Common/security"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 )
 
@@ -135,14 +137,10 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 
 	task := s.state.tasks[lease.taskID]
 	processed := in.GetProcessed()
-	total := in.GetTotal()
 	duration := time.Duration(in.GetDurationMs()) * time.Millisecond
 	avgRate := in.GetAvgRate()
 	if processed <= 0 {
 		processed = lease.end - lease.start
-	}
-	if total <= 0 {
-		total = lease.end - lease.start
 	}
 	if duration <= 0 {
 		duration = now.Sub(lease.assignedAt)
@@ -275,6 +273,11 @@ func (s *server) ReportResult(ctx context.Context, in *pb.CrackResult) (*pb.Ack,
 }
 
 func runServer(interactive bool) error {
+	securityState, err := loadServerSecurity()
+	if err != nil {
+		return err
+	}
+
 	lis, err := net.Listen("tcp", Port)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -288,11 +291,23 @@ func runServer(interactive bool) error {
 	renderLoop.Start()
 	defer renderLoop.Stop()
 
+	if securityState.generatedCert {
+		logWarn("Generated TLS cert at %s (set %s/%s to override)", securityState.certPath, security.EnvTLSCert, security.EnvTLSKey)
+	}
+	if securityState.generatedTokens {
+		logWarn("Generated auth tokens at %s (set %s/%s to override)", securityState.tokenPath, security.EnvAdminToken, security.EnvWorkerToken)
+	}
+
 	monitor := newWorkerMonitor(state)
 	monitor.Start()
 	defer monitor.Stop()
 
-	s := grpc.NewServer()
+	authPolicy := newAuthPolicy(securityState.tokens)
+	s := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(securityState.tlsConfig)),
+		grpc.UnaryInterceptor(unaryAuthInterceptor(authPolicy)),
+		grpc.StreamInterceptor(streamAuthInterceptor(authPolicy)),
+	)
 	srv := &server{
 		state: state,
 		ui:    ui,

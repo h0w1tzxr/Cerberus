@@ -228,16 +228,6 @@ func (s *masterState) hasActiveChunksLocked(taskID string) bool {
 	return false
 }
 
-func (s *masterState) activeChunkCountLocked(taskID string) int {
-	count := 0
-	for _, lease := range s.activeChunks {
-		if lease.taskID == taskID {
-			count++
-		}
-	}
-	return count
-}
-
 func (s *masterState) activeChunkCountByWorkerLocked(workerID string) int {
 	count := 0
 	for _, lease := range s.activeChunks {

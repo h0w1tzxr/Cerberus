@@ -92,5 +92,5 @@ func writeOutputFile(path string, lines []string) error {
 		}
 		builder.WriteString(value)
 	}
-	return os.WriteFile(path, []byte(builder.String()), 0o644)
+	return os.WriteFile(path, []byte(builder.String()), 0o600)
 }

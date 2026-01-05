@@ -93,6 +93,35 @@
 - Port **`50051`** dapat diakses antara **Master** dan **Worker**
 - Jika memakai wordlist, **path harus ada di Master dan Worker**
 
+## 🔐 Security Defaults
+
+Mulai versi ini, koneksi gRPC memakai **TLS** dan butuh **token autentikasi**.
+Saat Master pertama kali dijalankan, ia akan membuat sertifikat self-signed dan token admin/worker
+di config directory pengguna.
+
+Lokasi config directory (default):
+- Windows: `%APPDATA%\cerberus`
+- macOS: `~/Library/Application Support/cerberus`
+- Linux: `~/.config/cerberus`
+
+File yang dibuat:
+- `server.crt`
+- `server.key`
+- `tokens`
+
+Jika Worker berjalan di mesin lain, salin `server.crt` dan `tokens` ke mesin Worker
+atau set environment variable berikut:
+- `CERBERUS_TLS_CA=/path/to/server.crt`
+- `CERBERUS_WORKER_TOKEN=<token>`
+
+Untuk CLI admin:
+- `CERBERUS_TLS_CA=/path/to/server.crt`
+- `CERBERUS_ADMIN_TOKEN=<token>`
+
+Opsional override:
+- `CERBERUS_TLS_CERT` / `CERBERUS_TLS_KEY` (server)
+- `CERBERUS_TLS_SERVER_NAME` (client)
+
 ## 🗂️ Struktur Project
 
 ```text
@@ -128,10 +157,18 @@ Output contoh:
 
 ### 3) Konfigurasi Worker dulu
 
-Ubah alamat Master di `Worker/Worker.go`:
+Set alamat Master + token Worker lewat environment variable:
 
-```go
-const MasterAddress = "<IP_MASTER>:50051"
+```bash
+export CERBERUS_MASTER_ADDR="<IP_MASTER>:50051"
+export CERBERUS_TLS_CA="/path/to/server.crt"
+export CERBERUS_WORKER_TOKEN="<token>"
+```
+
+Atau lewat flag:
+
+```bash
+go run ./Worker --addr "<IP_MASTER>:50051" --tls-ca "/path/to/server.crt" --token "<token>"
 ```
 
 ### 4) Jalankan Worker di device yang akan jadi Worker
@@ -190,6 +227,9 @@ go run ./Master -h
 
 * `--addr` (default `localhost:50051`) - alamat gRPC Master
 * `--operator` (default `$USER` atau `operator`) - identitas operator
+* `--token` - admin auth token
+* `--tls-ca` - path ke TLS CA certificate
+* `--tls-server-name` - override TLS server name
 
 ### Commands
 
@@ -228,6 +268,7 @@ go run ./Master task list -h
 * Gunakan `-o` / `--output` pada `task add` atau `task add-batch`.
 * Output disusun **satu baris per hash** sesuai urutan input batch.
 * Isi baris adalah **password hasil crack**, atau kosong jika tidak ditemukan.
+* File output ditulis dengan permission terbatas (owner-only).
 
 ---
 
@@ -485,7 +526,8 @@ PATH="$(go env GOPATH)/bin:$PATH" \
 
 * **Worker tidak bisa membaca wordlist**: pastikan path ada di mesin Worker
 * **No work available**: pastikan task `approved` dan `dispatch_ready=true`
-* **Connection error**: cek `MasterAddress` di `Worker/Worker.go` dan pastikan port `50051` terbuka. Pastikan juga Master dan Worker ada di jaringan yang sama dan tidak terblokir firewall.
+* **Connection error**: cek `CERBERUS_MASTER_ADDR` atau flag `--addr` di Worker dan pastikan port `50051` terbuka. Pastikan juga Master dan Worker ada di jaringan yang sama dan tidak terblokir firewall.
+* **TLS/auth error**: pastikan `CERBERUS_TLS_CA` mengarah ke `server.crt` dan token admin/worker sesuai isi file `tokens`.
 * **Help output**: gunakan `-h` di level mana pun, contoh `cerberus task add -h`
 
 <details>

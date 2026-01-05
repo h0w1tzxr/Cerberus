@@ -2,15 +2,16 @@ package master
 
 import (
 	"context"
-	"flag"
-	"io"
+	"errors"
 	"net"
 	"strings"
 	"time"
 
+	"cracker/Common/security"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 )
 
@@ -25,9 +26,15 @@ func Run(args []string) error {
 	if err == nil {
 		return nil
 	}
-	addr := extractAddr(args)
-	if !canAutoStart(addr) || !shouldAutoStart(err) {
+	cfg := extractClientConfig(args)
+	missingToken := errors.Is(err, errAdminTokenMissing)
+	if !canAutoStart(cfg.addr) || (!shouldAutoStart(err) && !missingToken) {
 		return err
+	}
+	if missingToken {
+		if tokenPath, pathErr := security.DefaultTokenPath(); pathErr == nil && security.FileExists(tokenPath) {
+			return err
+		}
 	}
 
 	serverErr := make(chan error, 1)
@@ -35,7 +42,7 @@ func Run(args []string) error {
 		serverErr <- runServer(false)
 	}()
 
-	if err := waitForServer(addr, serverErr); err != nil {
+	if err := waitForServer(cfg, serverErr); err != nil {
 		return err
 	}
 	if err := handleCLI(args); err != nil {
@@ -56,12 +63,15 @@ func shouldAutoStart(err error) bool {
 	return strings.Contains(lower, "connection refused") || strings.Contains(lower, "connection error")
 }
 
-func extractAddr(args []string) string {
-	fs := flag.NewFlagSet("cerberus", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	addr := fs.String("addr", defaultAdminAddress, "")
-	_ = fs.Parse(args)
-	return *addr
+func extractClientConfig(args []string) clientConfig {
+	cfg, _, _, err := parseGlobalFlags(args)
+	if err != nil {
+		return clientConfig{addr: defaultAdminAddress}
+	}
+	if cfg.addr == "" {
+		cfg.addr = defaultAdminAddress
+	}
+	return cfg
 }
 
 func canAutoStart(addr string) bool {
@@ -81,8 +91,9 @@ func canAutoStart(addr string) bool {
 	return host == "" || host == "localhost" || host == "127.0.0.1"
 }
 
-func waitForServer(addr string, serverErr <-chan error) error {
+func waitForServer(cfg clientConfig, serverErr <-chan error) error {
 	deadline := time.Now().Add(autoStartTimeout)
+	var lastErr error
 	for {
 		select {
 		case err := <-serverErr:
@@ -92,16 +103,49 @@ func waitForServer(addr string, serverErr <-chan error) error {
 		default:
 		}
 
+		options, err := clientDialOptions(cfg, false)
+		if err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-		cancel()
+		conn, err := grpc.NewClient(cfg.addr, options...)
 		if err == nil {
+			err = waitForReady(ctx, conn)
 			_ = conn.Close()
-			return nil
+			if err == nil {
+				cancel()
+				return nil
+			}
+		}
+		cancel()
+		if err != nil {
+			lastErr = err
 		}
 		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return lastErr
+			}
 			return err
 		}
 		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func waitForReady(ctx context.Context, conn *grpc.ClientConn) error {
+	if conn == nil {
+		return errors.New("client connection is nil")
+	}
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if state == connectivity.Shutdown {
+			return errors.New("connection shutdown")
+		}
+		if !conn.WaitForStateChange(ctx, state) {
+			return ctx.Err()
+		}
 	}
 }
