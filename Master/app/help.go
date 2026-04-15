@@ -98,6 +98,10 @@ func renderHelp(out io.Writer, target helpTarget) {
 		renderTaskSubHelp(out, target.subcommand)
 	case "worker":
 		renderWorkerHelp(out)
+	case "token":
+		renderTokenHelp(out)
+	case "serve", "server":
+		renderServeHelp(out)
 	case "dispatch":
 		renderDispatchHelp(out)
 	default:
@@ -112,8 +116,10 @@ func renderGlobalHelp(out io.Writer) {
 	fmt.Fprintln(out, "  cerberus [--addr ADDR] [--operator ID] [--token TOKEN] [--tls-ca PATH] [--tls-server-name NAME] <command> [args]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Commands:")
+	fmt.Fprintln(out, "  serve      Run the Master server")
 	fmt.Fprintln(out, "  task       Manage tasks (add, list, show, actions)")
 	fmt.Fprintln(out, "  worker     Worker monitoring")
+	fmt.Fprintln(out, "  token      Manage worker tokens")
 	fmt.Fprintln(out, "  dispatch   Pause/resume global dispatch")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Global flags:")
@@ -130,8 +136,31 @@ func renderGlobalHelp(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Help:")
 	fmt.Fprintln(out, "  cerberus -h")
+	fmt.Fprintln(out, "  cerberus serve -h")
 	fmt.Fprintln(out, "  cerberus task -h")
 	fmt.Fprintln(out, "  cerberus task add -h")
+}
+
+func renderServeHelp(out io.Writer) {
+	fmt.Fprintln(out, "Serve")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  cerberus serve [--listen ADDR] [--public] [--admin-remote] [--tls-hosts HOSTS]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Flags:")
+	fmt.Fprintf(out, "  --listen        listen address (default %s)\n", defaultListenAddress)
+	fmt.Fprintln(out, "  --public        allow non-loopback listen addresses")
+	fmt.Fprintln(out, "  --admin-remote  allow admin RPCs from non-loopback clients")
+	fmt.Fprintln(out, "  --tls-hosts     comma-separated SANs for generated TLS certificates")
+}
+
+func renderTokenHelp(out io.Writer) {
+	fmt.Fprintln(out, "Token commands")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  cerberus token worker issue --worker-id ID")
+	fmt.Fprintln(out, "  cerberus token worker list")
+	fmt.Fprintln(out, "  cerberus token worker revoke --worker-id ID")
 }
 
 func renderTaskHelp(out io.Writer) {
@@ -238,7 +267,12 @@ func renderTaskListHelp(out io.Writer) {
 	fmt.Fprintln(out, "Task list")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  cerberus task list [--status queued,reviewed,approved,running,completed,failed,canceled]")
+	fmt.Fprintln(out, "  cerberus task list [--status queued,reviewed,approved,running,completed,failed,canceled] [--table] [--limit N]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Flags:")
+	fmt.Fprintln(out, "  --status  comma-separated statuses")
+	fmt.Fprintln(out, "  --table   print detailed task rows")
+	fmt.Fprintln(out, "  --limit   print at most N detailed task rows; implies --table")
 }
 
 func renderTaskShowHelp(out io.Writer) {

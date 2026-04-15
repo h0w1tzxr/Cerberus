@@ -14,7 +14,10 @@ import (
 	"google.golang.org/grpc"
 )
 
-const consolePrompt = "cerberus> "
+const (
+	consolePrompt    = "cerberus> "
+	shellCommandHint = "This is the Cerberus console. Run shell commands in another terminal. Type help for Cerberus commands."
+)
 
 func startInteractiveConsole(server *grpc.Server, loop *console.RenderLoop, renderer *console.StickyRenderer, ui *masterUI, state *masterState) {
 	if renderer == nil || !isTerminal(os.Stdin) {
@@ -84,6 +87,11 @@ func startInteractiveConsole(server *grpc.Server, loop *console.RenderLoop, rend
 				}
 				if args[0] == "help" || args[0] == "?" {
 					args = []string{"-h"}
+				}
+				if isShellLikeCommand(args) {
+					fmt.Fprintln(renderer, shellCommandHint)
+					restoreStatus(renderer, loop, ui)
+					continue
 				}
 				if err := handleCLIWithWriter(args, renderer); err != nil {
 					fmt.Fprintf(renderer, "%s %v\n", console.TagError(), err)
@@ -201,6 +209,22 @@ func isExitCommand(value string) bool {
 
 func isPrintable(value byte) bool {
 	return value >= 32 && value <= 126
+}
+
+func isShellLikeCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	command := strings.ToLower(strings.TrimSpace(args[0]))
+	if strings.HasPrefix(command, "./") || strings.HasPrefix(command, "../") || strings.HasPrefix(command, "/") {
+		return true
+	}
+	switch command {
+	case "go", "cd", "ls", "cat", "mkdir", "export", "pwd", "clear":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitArgs(input string) ([]string, error) {

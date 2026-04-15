@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"cracker/Common/security"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc/codes"
@@ -30,27 +31,46 @@ func (a *adminServer) AddTask(ctx context.Context, spec *pb.TaskSpec) (*pb.Task,
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	hash, err = validateHashForMode(hash, mode)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	wordlistPath := strings.TrimSpace(spec.WordlistPath)
-	outputPath := strings.TrimSpace(spec.OutputPath)
-	totalKeyspace := spec.Keyspace
+	masterWordlistPath := ""
 	if wordlistPath != "" {
-		index, err := a.state.wordlists.Get(wordlistPath)
+		var err error
+		masterWordlistPath, err = security.ResolveWordlistPath(wordlistPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		wordlistPath, err = security.DataPathReference(masterWordlistPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+	outputPath := strings.TrimSpace(spec.OutputPath)
+	if outputPath != "" {
+		var err error
+		outputPath, err = security.ResolveOutputPath(outputPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+	totalKeyspace := spec.Keyspace
+	if masterWordlistPath != "" {
+		index, err := a.state.wordlists.Get(masterWordlistPath)
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		totalKeyspace = index.LineCount
 	}
-	if totalKeyspace <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "keyspace must be greater than zero")
-	}
-
 	chunkSize := spec.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = DefaultChunkSize
-	}
 	priority := int(spec.Priority)
 	maxRetries := int(spec.MaxRetries)
+	if err := validateTaskLimits(chunkSize, totalKeyspace, masterWordlistPath != "", priority, maxRetries); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	a.state.mu.Lock()
 	batchID := ""
@@ -60,10 +80,11 @@ func (a *adminServer) AddTask(ctx context.Context, spec *pb.TaskSpec) (*pb.Task,
 		batchTotal = 1
 		a.state.ensureBatchOutputLocked(batchID, outputPath, batchTotal)
 	}
-	task := a.state.addTask(hash, mode, wordlistPath, outputPath, batchID, 0, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
+	task := a.state.addTask(hash, mode, wordlistPath, masterWordlistPath, outputPath, batchID, 0, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
+	protoTask := taskToProto(task)
 	a.state.mu.Unlock()
 
-	return taskToProto(task), nil
+	return protoTask, nil
 }
 
 func (a *adminServer) AddTaskBatch(ctx context.Context, spec *pb.TaskBatchSpec) (*pb.TaskListResponse, error) {
@@ -79,35 +100,61 @@ func (a *adminServer) AddTaskBatch(ctx context.Context, spec *pb.TaskBatchSpec) 
 	}
 
 	wordlistPath := strings.TrimSpace(spec.WordlistPath)
-	outputPath := strings.TrimSpace(spec.OutputPath)
-	totalKeyspace := spec.Keyspace
+	masterWordlistPath := ""
 	if wordlistPath != "" {
-		index, err := a.state.wordlists.Get(wordlistPath)
+		var err error
+		masterWordlistPath, err = security.ResolveWordlistPath(wordlistPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		wordlistPath, err = security.DataPathReference(masterWordlistPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+	outputPath := strings.TrimSpace(spec.OutputPath)
+	if outputPath != "" {
+		var err error
+		outputPath, err = security.ResolveOutputPath(outputPath)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+	totalKeyspace := spec.Keyspace
+	if masterWordlistPath != "" {
+		index, err := a.state.wordlists.Get(masterWordlistPath)
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		totalKeyspace = index.LineCount
 	}
-	if totalKeyspace <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "keyspace must be greater than zero")
-	}
-
 	chunkSize := spec.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = DefaultChunkSize
-	}
 	priority := int(spec.Priority)
 	maxRetries := int(spec.MaxRetries)
+	if err := validateTaskLimits(chunkSize, totalKeyspace, masterWordlistPath != "", priority, maxRetries); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
-	a.state.mu.Lock()
 	validHashes := make([]string, 0, len(spec.Hashes))
-	for _, hash := range spec.Hashes {
+	for i, hash := range spec.Hashes {
 		hash = normalizeHash(hash)
 		if hash == "" {
 			continue
 		}
+		hash, err = validateHashForMode(hash, mode)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "hash %d: %s", i+1, err.Error())
+		}
 		validHashes = append(validHashes, hash)
 	}
+	if len(validHashes) > maxBatchHashes {
+		return nil, status.Errorf(codes.InvalidArgument, "batch hashes must be at most %d", maxBatchHashes)
+	}
+	if len(validHashes) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "no valid hashes provided")
+	}
+
+	a.state.mu.Lock()
 	tasks := make([]*pb.Task, 0, len(validHashes))
 	batchID := ""
 	batchTotal := 0
@@ -117,14 +164,11 @@ func (a *adminServer) AddTaskBatch(ctx context.Context, spec *pb.TaskBatchSpec) 
 		a.state.ensureBatchOutputLocked(batchID, outputPath, batchTotal)
 	}
 	for i, hash := range validHashes {
-		task := a.state.addTask(hash, mode, wordlistPath, outputPath, batchID, i, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
+		task := a.state.addTask(hash, mode, wordlistPath, masterWordlistPath, outputPath, batchID, i, batchTotal, chunkSize, totalKeyspace, priority, maxRetries)
 		tasks = append(tasks, taskToProto(task))
 	}
 	a.state.mu.Unlock()
 
-	if len(tasks) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "no valid hashes provided")
-	}
 	return &pb.TaskListResponse{Tasks: tasks}, nil
 }
 
@@ -136,7 +180,7 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 	if taskID == "" {
 		return nil, status.Error(codes.InvalidArgument, "task id is required")
 	}
-	operator := strings.TrimSpace(req.Operator)
+	operator := security.SanitizeLogValue(req.Operator, 128)
 
 	a.state.mu.Lock()
 	var (
@@ -199,7 +243,7 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 		task.DispatchReady = false
 		task.Paused = false
 		task.CanceledBy = operator
-		task.FailureReason = strings.TrimSpace(req.Reason)
+		task.FailureReason = security.SanitizeLogValue(req.Reason, 300)
 		task.PendingRanges = nil
 		task.UpdatedAt = now
 		if task.CompletedAt.IsZero() {
@@ -249,6 +293,9 @@ func (a *adminServer) ApplyTaskAction(ctx context.Context, req *pb.TaskActionReq
 			a.state.enqueueTaskLocked(task)
 		}
 	case pb.TaskAction_TASK_ACTION_SET_PRIORITY:
+		if int(req.Priority) < minPriority || int(req.Priority) > maxPriority {
+			return nil, status.Errorf(codes.InvalidArgument, "priority must be between %d and %d", minPriority, maxPriority)
+		}
 		task.Priority = int(req.Priority)
 		task.UpdatedAt = now
 		if task.isDispatchable() {
@@ -267,11 +314,13 @@ func (a *adminServer) GetTask(ctx context.Context, req *pb.TaskActionRequest) (*
 	}
 	a.state.mu.Lock()
 	task := a.state.tasks[req.TaskId]
-	a.state.mu.Unlock()
 	if task == nil {
+		a.state.mu.Unlock()
 		return nil, status.Error(codes.NotFound, "task not found")
 	}
-	return taskToProto(task), nil
+	protoTask := taskToProto(task)
+	a.state.mu.Unlock()
+	return protoTask, nil
 }
 
 func (a *adminServer) ListTasks(ctx context.Context, req *pb.TaskListRequest) (*pb.TaskListResponse, error) {
@@ -288,12 +337,11 @@ func (a *adminServer) ListTasks(ctx context.Context, req *pb.TaskListRequest) (*
 
 	a.state.mu.Lock()
 	tasks := a.state.listTasksLocked(filter)
-	a.state.mu.Unlock()
-
 	resp := &pb.TaskListResponse{Tasks: make([]*pb.Task, 0, len(tasks))}
 	for _, task := range tasks {
 		resp.Tasks = append(resp.Tasks, taskToProto(task))
 	}
+	a.state.mu.Unlock()
 	return resp, nil
 }
 

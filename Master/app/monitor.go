@@ -30,6 +30,9 @@ func (m *workerMonitor) Start() {
 				summaries := make([]workerSummary, 0)
 				m.state.mu.Lock()
 				for id, info := range m.state.workers {
+					if info.Quarantined {
+						continue
+					}
 					health := workerHealth(now, info.LastSeen, WorkerStaleAfter)
 					if health == "healthy" {
 						staleLogged[id] = false

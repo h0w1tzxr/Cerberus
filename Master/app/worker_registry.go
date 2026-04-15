@@ -18,6 +18,8 @@ type workerInfo struct {
 	LastTaskID        string
 	LastChunkRate     float64
 	LastChunkDuration time.Duration
+	Quarantined       bool
+	QuarantineReason  string
 }
 
 type workerStatus struct {

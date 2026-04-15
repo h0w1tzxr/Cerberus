@@ -18,7 +18,7 @@
   <a href="https://github.com/h0w1tzxr/Cerberus/blob/main/LICENSE">
     <img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-blue.svg" />
   </a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" />
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" />
   <img alt="gRPC" src="https://img.shields.io/badge/gRPC-enabled-2EA9FF?logo=grpc&logoColor=white" />
   <img alt="CLI" src="https://img.shields.io/badge/UX-CLI--first-222222" />
   <a href="https://github.com/h0w1tzxr/Cerberus/issues">
@@ -89,15 +89,15 @@
 
 ## 🧰 Prasyarat
 
-- **Go 1.22+**
+- **Go 1.25+**
 - Port **`50051`** dapat diakses antara **Master** dan **Worker**
-- Jika memakai wordlist, **path harus ada di Master dan Worker**
+- Jika memakai wordlist, letakkan file di `CERBERUS_DATA_DIR` dengan path relatif yang sama di Master dan Worker
 
 ## 🔐 Security Defaults
 
 Mulai versi ini, koneksi gRPC memakai **TLS** dan butuh **token autentikasi**.
-Saat Master pertama kali dijalankan, ia akan membuat sertifikat self-signed dan token admin/worker
-di config directory pengguna.
+Saat Master pertama kali dijalankan, ia akan membuat sertifikat self-signed, token admin, dan token worker lokal
+di config directory pengguna. Token admin dan token worker dipisah supaya Worker tidak bisa memakai RPC admin.
 
 Lokasi config directory (default):
 - Windows: `%APPDATA%\cerberus`
@@ -105,13 +105,25 @@ Lokasi config directory (default):
 - Linux: `~/.config/cerberus`
 
 File yang dibuat:
-- `server.crt`
-- `server.key`
-- `tokens`
+- `server.crt` - certificate untuk client trust
+- `server.key` - private key server, owner-only
+- `admin.token` - token CLI admin lokal, owner-only
+- `worker_tokens.json` - hash token Worker yang diizinkan, owner-only
+- `workers/<worker-id>.token` - token Worker lokal, owner-only
 
-Jika Worker berjalan di mesin lain, salin `server.crt` dan `tokens` ke mesin Worker
-atau set environment variable berikut:
+Untuk Worker baru, issue token per Worker dari mesin Master:
+
+```bash
+go run ./Master token worker issue --worker-id worker-lab-01
+```
+
+Perintah itu menampilkan `CERBERUS_WORKER_ID` dan `CERBERUS_WORKER_TOKEN` sekali untuk dikonfigurasi di mesin Worker.
+Gunakan `go run ./Master token worker list` untuk audit status token dan
+`go run ./Master token worker revoke --worker-id worker-lab-01` untuk revoke.
+
+Jika Worker berjalan di mesin lain, salin `server.crt` ke mesin Worker dan set environment variable berikut:
 - `CERBERUS_TLS_CA=/path/to/server.crt`
+- `CERBERUS_WORKER_ID=<worker-id>`
 - `CERBERUS_WORKER_TOKEN=<token>`
 
 Untuk CLI admin:
@@ -121,6 +133,21 @@ Untuk CLI admin:
 Opsional override:
 - `CERBERUS_TLS_CERT` / `CERBERUS_TLS_KEY` (server)
 - `CERBERUS_TLS_SERVER_NAME` (client)
+- `CERBERUS_LISTEN_ADDR` atau `cerberus serve --listen` (default: `127.0.0.1:50051`)
+- `CERBERUS_PUBLIC=1` atau `cerberus serve --public` untuk bind non-loopback
+- `CERBERUS_ADMIN_REMOTE=1` atau `cerberus serve --admin-remote` untuk admin RPC dari luar localhost
+- `CERBERUS_TLS_HOSTS=host,ip` atau `cerberus serve --tls-hosts host,ip` untuk SAN generated certificate saat public mode
+- `CERBERUS_DATA_DIR` (default: config directory `data/`) untuk wordlist dan output
+- `CERBERUS_ALLOW_UNSAFE_PATHS=1` jika demo lokal perlu path file di luar data dir
+- `CERBERUS_REVEAL_PASSWORDS=1` untuk menampilkan password hasil crack di log/CLI
+
+Default server hanya bind ke `127.0.0.1:50051`. Untuk lab network:
+
+```bash
+go run ./Master serve --listen 0.0.0.0:50051 --public --tls-hosts "<IP_MASTER>,<DNS_MASTER>"
+```
+
+Admin RPC tetap localhost-only kecuali `--admin-remote` / `CERBERUS_ADMIN_REMOTE=1` diaktifkan.
 
 ## 🗂️ Struktur Project
 
@@ -151,16 +178,25 @@ go run ./Master
 Output contoh:
 
 ```text
-[i] Master Hash Cracker running on port :50051
+[i] Master Hash Cracker listening on 127.0.0.1:50051
 [i] Ready for Workers...
 ```
 
-### 3) Konfigurasi Worker dulu
+### 3) Issue token Worker
 
-Set alamat Master + token Worker lewat environment variable:
+Di terminal Master:
+
+```bash
+go run ./Master token worker issue --worker-id worker-lab-01
+```
+
+### 4) Konfigurasi Worker dulu
+
+Set alamat Master, worker ID, TLS CA, dan token Worker lewat environment variable:
 
 ```bash
 export CERBERUS_MASTER_ADDR="<IP_MASTER>:50051"
+export CERBERUS_WORKER_ID="worker-lab-01"
 export CERBERUS_TLS_CA="/path/to/server.crt"
 export CERBERUS_WORKER_TOKEN="<token>"
 ```
@@ -168,19 +204,27 @@ export CERBERUS_WORKER_TOKEN="<token>"
 Atau lewat flag:
 
 ```bash
-go run ./Worker --addr "<IP_MASTER>:50051" --tls-ca "/path/to/server.crt" --token "<token>"
+go run ./Worker --addr "<IP_MASTER>:50051" --worker-id "worker-lab-01" --tls-ca "/path/to/server.crt" --token "<token>"
 ```
 
-### 4) Jalankan Worker di device yang akan jadi Worker
+### 5) Jalankan Worker di device yang akan jadi Worker
 
 ```bash
 go run ./Worker
 ```
 
-### 5) Tambah task lewat prompt `cerberus>`
+### 6) Tambah task lewat prompt `cerberus>`
 
 ```bash
 task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
+```
+
+Contoh hash MD5 yang cocok dengan wordlist quickstart:
+
+```text
+admin        21232f297a57a5a743894a0e4a801fc3
+cerberus123  f6be3f2408481885304a362deafa168a
+password     5f4dcc3b5aa765d61d8327deb882cf99
 ```
 
 <details>
@@ -233,8 +277,10 @@ go run ./Master -h
 
 ### Commands
 
+* `serve` - jalankan Master server
 * `task` - manajemen task
 * `worker` - daftar worker
+* `token` - issue/list/revoke token Worker
 * `dispatch` - pause/resume dispatch global
 
 ### Shortcut single-dash
@@ -344,7 +390,11 @@ go run ./Master task add-batch --file hashes.txt --mode md5 --keyspace 100000 --
 
 ```bash
 go run ./Master task list
+go run ./Master task list --table
+go run ./Master task list --table --limit 20
 ```
+
+Default `task list` menampilkan ringkasan singkat. Gunakan `--table` untuk melihat baris task detail.
 
 </details>
 
@@ -452,7 +502,7 @@ flowchart LR
 
   subgraph MS["🧠 Master (gRPC Server)"]
     direction TB
-    MS1["📡 Menyalakan gRPC Server (port :50051)"]
+    MS1["📡 Menyalakan gRPC Server (default 127.0.0.1:50051)"]
     MS2["📦 Queue Task + Bagi Chunk\n(Chunk Dispatcher)"]
     MS3["📊 Agregasi Status & Telemetri\n(Progress + Worker Health)"]
   end
@@ -510,6 +560,38 @@ flowchart LR
 go test ./...
 ```
 
+### Smoke test lokal
+
+```bash
+scripts/smoke-local.sh
+```
+
+Smoke test ini memakai config/data sementara di `/tmp`, menjalankan Master dan Worker lokal di `127.0.0.1:55051`,
+mengirim 1000 task wordlist, lalu memastikan semuanya `completed` dan `found`.
+
+Override opsional:
+
+```bash
+CERBERUS_SMOKE_TASKS=1000 CERBERUS_SMOKE_TIMEOUT=60s scripts/smoke-local.sh
+```
+
+### Build binary lokal
+
+```bash
+scripts/build-release.sh
+```
+
+Output default:
+
+```text
+bin/cerberus-master
+bin/cerberus-worker
+```
+
+### Demo lab dua laptop
+
+Ikuti checklist di [`docs/lab-demo.md`](docs/lab-demo.md). Buat tag release setelah smoke test lokal dan demo dua laptop berhasil.
+
 ### Regenerate protobuf
 
 ```bash
@@ -524,20 +606,23 @@ PATH="$(go env GOPATH)/bin:$PATH" \
 
 ## 🧯 Troubleshooting
 
-* **Worker tidak bisa membaca wordlist**: pastikan path ada di mesin Worker
+* **Worker tidak bisa membaca wordlist**: pastikan file ada di `CERBERUS_DATA_DIR` Worker dengan path relatif yang sama seperti di Master
 * **No work available**: pastikan task `approved` dan `dispatch_ready=true`
 * **Connection error**: cek `CERBERUS_MASTER_ADDR` atau flag `--addr` di Worker dan pastikan port `50051` terbuka. Pastikan juga Master dan Worker ada di jaringan yang sama dan tidak terblokir firewall.
-* **TLS/auth error**: pastikan `CERBERUS_TLS_CA` mengarah ke `server.crt` dan token admin/worker sesuai isi file `tokens`.
+* **Bind network gagal**: untuk listen di non-loopback, jalankan `go run ./Master serve --listen 0.0.0.0:50051 --public --tls-hosts "<IP_MASTER>"`
+* **TLS/auth error**: pastikan `CERBERUS_TLS_CA` mengarah ke `server.crt`, `CERBERUS_WORKER_ID` cocok dengan token yang di-issue, dan token belum direvoke.
 * **Help output**: gunakan `-h` di level mana pun, contoh `cerberus task add -h`
 
 <details>
 <summary><b>🔍 Checklist</b></summary>
 
 ```text
-[ ] Master listening di :50051
+[ ] Master listening di 127.0.0.1:50051 untuk lokal, atau --public untuk lab network
 [ ] Worker bisa resolve IP/hostname Master
 [ ] Firewall membuka TCP 50051
 [ ] Tidak ada port forwarding yang salah
+[ ] server.crt di Worker cocok dengan Master
+[ ] Worker memakai CERBERUS_WORKER_ID dan token yang di-issue untuk ID tersebut
 ```
 
 </details>

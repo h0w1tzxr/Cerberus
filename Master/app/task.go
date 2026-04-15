@@ -27,35 +27,36 @@ const (
 )
 
 type Task struct {
-	ID            string
-	Hash          string
-	Mode          HashMode
-	WordlistPath  string
-	OutputPath    string
-	Status        TaskStatus
-	Priority      int
-	ChunkSize     int64
-	TotalKeyspace int64
-	NextIndex     int64
-	Completed     int64
-	PendingRanges []taskRange
-	BatchID       string
-	BatchIndex    int
-	BatchTotal    int
-	Attempts      int
-	MaxRetries    int
-	Found         bool
-	FoundPassword string
-	FailureReason string
-	DispatchReady bool
-	Paused        bool
-	ReviewedBy    string
-	ApprovedBy    string
-	CanceledBy    string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	StartedAt     time.Time
-	CompletedAt   time.Time
+	ID                 string
+	Hash               string
+	Mode               HashMode
+	WordlistPath       string
+	MasterWordlistPath string
+	OutputPath         string
+	Status             TaskStatus
+	Priority           int
+	ChunkSize          int64
+	TotalKeyspace      int64
+	NextIndex          int64
+	Completed          int64
+	PendingRanges      []taskRange
+	BatchID            string
+	BatchIndex         int
+	BatchTotal         int
+	Attempts           int
+	MaxRetries         int
+	Found              bool
+	FoundPassword      string
+	FailureReason      string
+	DispatchReady      bool
+	Paused             bool
+	ReviewedBy         string
+	ApprovedBy         string
+	CanceledBy         string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	StartedAt          time.Time
+	CompletedAt        time.Time
 }
 
 type taskRange struct {

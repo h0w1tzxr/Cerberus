@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"cracker/Common/security"
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
@@ -40,7 +42,7 @@ func handleCLIWithWriter(args []string, out io.Writer) error {
 		return err
 	}
 	if len(remaining) == 0 {
-		return errors.New("missing command (task|worker|dispatch)")
+		return errors.New("missing command (task|worker|token|dispatch)")
 	}
 
 	switch remaining[0] {
@@ -48,10 +50,86 @@ func handleCLIWithWriter(args []string, out io.Writer) error {
 		return handleTaskCLI(cfg, operator, remaining[1:], out)
 	case "worker":
 		return handleWorkerCLI(cfg, remaining[1:], out)
+	case "token":
+		return handleTokenCLI(remaining[1:], out)
 	case "dispatch":
 		return handleDispatchCLI(cfg, operator, remaining[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", remaining[0])
+	}
+}
+
+func handleTokenCLI(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("missing token subcommand")
+	}
+	if args[0] != "worker" {
+		return fmt.Errorf("unknown token subcommand %q", args[0])
+	}
+	if len(args) < 2 {
+		return errors.New("missing worker token action")
+	}
+	path, err := security.DefaultWorkerTokenStorePath()
+	if err != nil {
+		return err
+	}
+	switch args[1] {
+	case "issue":
+		fs := flag.NewFlagSet("token worker issue", flag.ContinueOnError)
+		workerID := fs.String("worker-id", "", "worker id")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		id, err := validateWorkerID(*workerID)
+		if err != nil {
+			return err
+		}
+		token, err := security.IssueWorkerToken(path, id, true)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Issued worker token for %s\n", id)
+		fmt.Fprintf(out, "%s=%s\n", security.EnvWorkerID, id)
+		fmt.Fprintf(out, "%s=%s\n", security.EnvWorkerToken, token)
+		return nil
+	case "list":
+		records, err := security.ListWorkerTokens(path)
+		if err != nil {
+			return err
+		}
+		writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(writer, "WORKER\tCREATED\tSTATUS")
+		for _, record := range records {
+			status := "active"
+			if record.RevokedAtUnix != 0 {
+				status = "revoked"
+			}
+			created := time.Unix(record.CreatedAtUnix, 0).Format(time.RFC3339)
+			fmt.Fprintf(writer, "%s\t%s\t%s\n", record.WorkerID, created, status)
+		}
+		writer.Flush()
+		return nil
+	case "revoke":
+		fs := flag.NewFlagSet("token worker revoke", flag.ContinueOnError)
+		workerID := fs.String("worker-id", "", "worker id")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		id, err := validateWorkerID(*workerID)
+		if err != nil {
+			return err
+		}
+		revoked, err := security.RevokeWorkerToken(path, id)
+		if err != nil {
+			return err
+		}
+		if !revoked {
+			return fmt.Errorf("no active token found for %s", id)
+		}
+		fmt.Fprintf(out, "Revoked worker token for %s\n", id)
+		return nil
+	default:
+		return fmt.Errorf("unknown worker token action %q", args[1])
 	}
 }
 
@@ -367,6 +445,9 @@ func taskSetPriority(client pb.CrackerAdminClient, operator string, args []strin
 func taskList(client pb.CrackerAdminClient, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task list", flag.ContinueOnError)
 	statuses := fs.String("status", "", "comma-separated statuses (queued,reviewed,approved,running,completed,failed,canceled)")
+	table := fs.Bool("table", false, "print the detailed task table")
+	var limit optionalLimitFlag
+	fs.Var(&limit, "limit", "print at most N task rows; implies --table")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -382,30 +463,11 @@ func taskList(client pb.CrackerAdminClient, args []string, out io.Writer) error 
 	if err != nil {
 		return err
 	}
-
-	if len(resp.Tasks) == 0 {
-		fmt.Fprintln(out, "No tasks found.")
-		return nil
-	}
-	summary := summarizeTasks(resp.Tasks)
-	fmt.Fprintf(out, "Total: %d | queued:%d reviewed:%d approved:%d running:%d completed:%d failed:%d canceled:%d | dispatch-ready:%d | paused:%d\n",
-		summary.total, summary.queued, summary.reviewed, summary.approved, summary.running,
-		summary.completed, summary.failed, summary.canceled, summary.dispatchReady, summary.paused)
-
-	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "ID\tSTATUS\tMODE\tHASH\tWORDLIST\tPROGRESS\tATTEMPTS\tFOUND\tPRIORITY\tDISPATCH\tPAUSED")
-	for _, task := range resp.Tasks {
-		progress := formatProgressWithCounts(task.Completed, task.TotalKeyspace)
-		wordlist := task.WordlistPath
-		if wordlist == "" {
-			wordlist = "-"
-		}
-		attempts := fmt.Sprintf("%d/%d", task.Attempts, task.MaxRetries)
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%d\t%t\t%t\n",
-			task.Id, formatTaskStatus(task.Status), formatMode(task.Mode), task.Hash, wordlist, progress,
-			attempts, task.Found, task.Priority, task.DispatchReady, task.Paused)
-	}
-	writer.Flush()
+	renderTaskList(resp.Tasks, taskListRenderOptions{
+		table:    *table || limit.set,
+		limit:    limit.value,
+		hasLimit: limit.set,
+	}, out)
 	return nil
 }
 
@@ -448,7 +510,11 @@ func taskShow(client pb.CrackerAdminClient, args []string, out io.Writer) error 
 		fmt.Fprintf(out, "  Canceled by: %s\n", task.CanceledBy)
 	}
 	if task.FoundPassword != "" {
-		fmt.Fprintf(out, "  Found password: %s\n", task.FoundPassword)
+		if security.RevealPasswords() {
+			fmt.Fprintf(out, "  Found password: %s\n", security.SanitizeLogValue(task.FoundPassword, 300))
+		} else {
+			fmt.Fprintln(out, "  Found password: <hidden; set CERBERUS_REVEAL_PASSWORDS=1 to display>")
+		}
 	}
 	if task.FailureReason != "" {
 		fmt.Fprintf(out, "  Failure reason: %s\n", task.FailureReason)
@@ -607,16 +673,18 @@ func formatProgressWithCounts(completed, total int64) string {
 }
 
 type taskListSummary struct {
-	total         int
-	queued        int
-	reviewed      int
-	approved      int
-	running       int
-	completed     int
-	failed        int
-	canceled      int
-	dispatchReady int
-	paused        int
+	total               int
+	queued              int
+	reviewed            int
+	approved            int
+	running             int
+	completed           int
+	failed              int
+	canceled            int
+	found               int
+	completedNoPassword int
+	dispatchReady       int
+	paused              int
 }
 
 func summarizeTasks(tasks []*pb.Task) taskListSummary {
@@ -636,10 +704,16 @@ func summarizeTasks(tasks []*pb.Task) taskListSummary {
 			summary.running++
 		case pb.TaskStatus_TASK_STATUS_COMPLETED:
 			summary.completed++
+			if !task.Found {
+				summary.completedNoPassword++
+			}
 		case pb.TaskStatus_TASK_STATUS_FAILED:
 			summary.failed++
 		case pb.TaskStatus_TASK_STATUS_CANCELED:
 			summary.canceled++
+		}
+		if task.Found {
+			summary.found++
 		}
 		if task.DispatchReady {
 			summary.dispatchReady++
@@ -649,6 +723,75 @@ func summarizeTasks(tasks []*pb.Task) taskListSummary {
 		}
 	}
 	return summary
+}
+
+type taskListRenderOptions struct {
+	table    bool
+	limit    int
+	hasLimit bool
+}
+
+func renderTaskList(tasks []*pb.Task, options taskListRenderOptions, out io.Writer) {
+	if len(tasks) == 0 {
+		fmt.Fprintln(out, "No tasks found.")
+		return
+	}
+	summary := summarizeTasks(tasks)
+	fmt.Fprintf(out, "Total: %d | queued:%d reviewed:%d approved:%d running:%d completed:%d failed:%d canceled:%d | found:%d completed-no-password:%d | dispatch-ready:%d paused:%d\n",
+		summary.total, summary.queued, summary.reviewed, summary.approved, summary.running,
+		summary.completed, summary.failed, summary.canceled, summary.found, summary.completedNoPassword,
+		summary.dispatchReady, summary.paused)
+	if !options.table {
+		return
+	}
+
+	rows := tasks
+	if options.hasLimit && options.limit < len(rows) {
+		rows = rows[:options.limit]
+	}
+	if options.hasLimit {
+		fmt.Fprintf(out, "Showing %d of %d matching tasks.\n", len(rows), len(tasks))
+	}
+
+	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "ID\tSTATUS\tMODE\tHASH\tWORDLIST\tPROGRESS\tATTEMPTS\tFOUND\tPRIORITY\tDISPATCH\tPAUSED")
+	for _, task := range rows {
+		progress := formatProgressWithCounts(task.Completed, task.TotalKeyspace)
+		wordlist := task.WordlistPath
+		if wordlist == "" {
+			wordlist = "-"
+		}
+		attempts := fmt.Sprintf("%d/%d", task.Attempts, task.MaxRetries)
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%t\t%d\t%t\t%t\n",
+			task.Id, formatTaskStatus(task.Status), formatMode(task.Mode), task.Hash, wordlist, progress,
+			attempts, task.Found, task.Priority, task.DispatchReady, task.Paused)
+	}
+	writer.Flush()
+}
+
+type optionalLimitFlag struct {
+	value int
+	set   bool
+}
+
+func (f *optionalLimitFlag) String() string {
+	if f == nil || !f.set {
+		return ""
+	}
+	return strconv.Itoa(f.value)
+}
+
+func (f *optionalLimitFlag) Set(value string) error {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("limit must be an integer")
+	}
+	if parsed < 0 {
+		return fmt.Errorf("limit must be non-negative")
+	}
+	f.value = parsed
+	f.set = true
+	return nil
 }
 
 func normalizeArgs(args []string) []string {

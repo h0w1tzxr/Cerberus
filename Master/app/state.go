@@ -71,35 +71,36 @@ func newMasterState() *masterState {
 	return state
 }
 
-func (s *masterState) addTask(hash string, mode HashMode, wordlistPath, outputPath, batchID string, batchIndex, batchTotal int, chunkSize, totalKeyspace int64, priority, maxRetries int) *Task {
+func (s *masterState) addTask(hash string, mode HashMode, wordlistPath, masterWordlistPath, outputPath, batchID string, batchIndex, batchTotal int, chunkSize, totalKeyspace int64, priority, maxRetries int) *Task {
 	s.nextTaskSeq++
 	now := time.Now()
 	taskID := fmt.Sprintf("task-%d", s.nextTaskSeq)
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
-	if maxRetries <= 0 {
+	if maxRetries < 0 {
 		maxRetries = DefaultMaxRetries
 	}
 	task := &Task{
-		ID:            taskID,
-		Hash:          hash,
-		Mode:          mode,
-		WordlistPath:  wordlistPath,
-		OutputPath:    outputPath,
-		Status:        TaskStatusApproved,
-		Priority:      priority,
-		ChunkSize:     chunkSize,
-		TotalKeyspace: totalKeyspace,
-		MaxRetries:    maxRetries,
-		BatchID:       batchID,
-		BatchIndex:    batchIndex,
-		BatchTotal:    batchTotal,
-		ReviewedBy:    "auto",
-		ApprovedBy:    "auto",
-		DispatchReady: true,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                 taskID,
+		Hash:               hash,
+		Mode:               mode,
+		WordlistPath:       wordlistPath,
+		MasterWordlistPath: masterWordlistPath,
+		OutputPath:         outputPath,
+		Status:             TaskStatusApproved,
+		Priority:           priority,
+		ChunkSize:          chunkSize,
+		TotalKeyspace:      totalKeyspace,
+		MaxRetries:         maxRetries,
+		BatchID:            batchID,
+		BatchIndex:         batchIndex,
+		BatchTotal:         batchTotal,
+		ReviewedBy:         "auto",
+		ApprovedBy:         "auto",
+		DispatchReady:      true,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	s.tasks[taskID] = task
 	s.leaderboardLogged = false
@@ -256,6 +257,10 @@ func (s *masterState) listTasksLocked(filter map[TaskStatus]bool) []*Task {
 }
 
 func (s *masterState) updateWorkerLocked(workerID string, cpuCores int32, now time.Time) {
+	if workerID == "" {
+		return
+	}
+	cpuCores = clampCPUCores(cpuCores)
 	info := s.workers[workerID]
 	if info == nil {
 		info = &workerInfo{ID: workerID}
@@ -265,6 +270,42 @@ func (s *masterState) updateWorkerLocked(workerID string, cpuCores int32, now ti
 		info.CPUCores = cpuCores
 	}
 	info.LastSeen = now
+}
+
+func (s *masterState) isWorkerQuarantinedLocked(workerID string) bool {
+	info := s.workers[workerID]
+	return info != nil && info.Quarantined
+}
+
+func (s *masterState) quarantineWorkerLocked(workerID, reason string, now time.Time) {
+	info := s.workers[workerID]
+	if info == nil {
+		info = &workerInfo{ID: workerID}
+		s.workers[workerID] = info
+	}
+	info.Quarantined = true
+	info.QuarantineReason = reason
+	info.LastSeen = now
+	for chunkID, lease := range s.activeChunks {
+		if lease.workerID != workerID {
+			continue
+		}
+		s.requeueLeaseLocked(chunkID, lease, now)
+	}
+}
+
+func (s *masterState) requeueLeaseLocked(chunkID string, lease taskLease, now time.Time) {
+	delete(s.activeChunks, chunkID)
+	delete(s.chunkProgress, chunkID)
+	task := s.tasks[lease.taskID]
+	if task == nil || task.isTerminal() {
+		return
+	}
+	task.PendingRanges = append(task.PendingRanges, taskRange{start: lease.start, end: lease.end})
+	task.UpdatedAt = now
+	if task.isDispatchable() {
+		s.enqueueTaskLocked(task)
+	}
 }
 
 func (s *masterState) updateWorkerRateLocked(workerID string, processed int64, duration time.Duration) {
@@ -368,12 +409,16 @@ func (s *masterState) workerStatusesLocked(now time.Time) []workerStatus {
 	statuses := make([]workerStatus, 0, len(s.workers))
 	for _, worker := range s.workers {
 		inflight := s.activeChunkCountByWorkerLocked(worker.ID)
+		health := workerHealth(now, worker.LastSeen, WorkerStaleAfter)
+		if worker.Quarantined {
+			health = "quarantined"
+		}
 		statuses = append(statuses, workerStatus{
 			ID:       worker.ID,
 			CPUCores: worker.CPUCores,
 			LastSeen: worker.LastSeen,
 			Inflight: inflight,
-			Health:   workerHealth(now, worker.LastSeen, WorkerStaleAfter),
+			Health:   health,
 		})
 	}
 	sort.Slice(statuses, func(i, j int) bool {

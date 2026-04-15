@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"cracker/Common/security"
 )
 
 type batchOutput struct {
@@ -85,6 +87,9 @@ func writeOutputFile(path string, lines []string) error {
 	if path == "" {
 		return nil
 	}
+	if err := security.PrepareOutputPath(path); err != nil {
+		return err
+	}
 	var builder strings.Builder
 	for i, value := range lines {
 		if i > 0 {
@@ -92,5 +97,8 @@ func writeOutputFile(path string, lines []string) error {
 		}
 		builder.WriteString(value)
 	}
-	return os.WriteFile(path, []byte(builder.String()), 0o600)
+	if err := os.WriteFile(path, []byte(builder.String()), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

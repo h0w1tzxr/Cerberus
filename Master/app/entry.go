@@ -3,6 +3,9 @@ package master
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -19,7 +22,17 @@ const autoStartTimeout = 5 * time.Second
 
 func Run(args []string) error {
 	if len(args) == 0 {
-		return runServer(true)
+		cfg, err := defaultServerConfig()
+		if err != nil {
+			return err
+		}
+		return runServer(true, cfg)
+	}
+	if cfg, ok, err := parseServerInvocation(args); ok || err != nil {
+		if err != nil {
+			return err
+		}
+		return runServer(true, cfg)
 	}
 
 	err := handleCLI(args)
@@ -32,14 +45,19 @@ func Run(args []string) error {
 		return err
 	}
 	if missingToken {
-		if tokenPath, pathErr := security.DefaultTokenPath(); pathErr == nil && security.FileExists(tokenPath) {
+		if tokenPath, pathErr := security.DefaultAdminTokenPath(); pathErr == nil && security.FileExists(tokenPath) {
 			return err
 		}
 	}
 
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- runServer(false)
+		cfg, cfgErr := defaultServerConfig()
+		if cfgErr != nil {
+			serverErr <- cfgErr
+			return
+		}
+		serverErr <- runServer(false, cfg)
 	}()
 
 	if err := waitForServer(cfg, serverErr); err != nil {
@@ -49,6 +67,72 @@ func Run(args []string) error {
 		return err
 	}
 	return <-serverErr
+}
+
+func parseServerInvocation(args []string) (serverConfig, bool, error) {
+	if len(args) == 0 {
+		cfg, err := defaultServerConfig()
+		return cfg, true, err
+	}
+	serverArgs := args
+	if args[0] == "serve" || args[0] == "server" {
+		serverArgs = args[1:]
+	} else if !isServerFlag(args[0]) {
+		return serverConfig{}, false, nil
+	}
+	fs := flag.NewFlagSet("cerberus serve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	listen := fs.String("listen", "", "Master listen address")
+	publicMode := fs.Bool("public", false, "allow binding non-loopback addresses")
+	adminRemote := fs.Bool("admin-remote", false, "allow remote admin RPCs")
+	tlsHosts := fs.String("tls-hosts", "", "comma-separated generated TLS certificate hosts")
+	if err := fs.Parse(serverArgs); err != nil {
+		return serverConfig{}, true, err
+	}
+	if len(fs.Args()) > 0 {
+		return serverConfig{}, true, fmt.Errorf("unknown serve argument %q", fs.Args()[0])
+	}
+	cfg, err := defaultServerConfig()
+	if err != nil {
+		return serverConfig{}, true, err
+	}
+	if strings.TrimSpace(*listen) != "" {
+		cfg.listenAddr = strings.TrimSpace(*listen)
+	}
+	if *publicMode {
+		cfg.publicMode = true
+	}
+	if *adminRemote {
+		cfg.allowRemoteAdmin = true
+	}
+	if strings.TrimSpace(*tlsHosts) != "" {
+		cfg.tlsHosts = splitFlagList(*tlsHosts)
+	}
+	if err := validateServerConfig(cfg); err != nil {
+		return serverConfig{}, true, err
+	}
+	return cfg, true, nil
+}
+
+func isServerFlag(arg string) bool {
+	return arg == "--listen" ||
+		arg == "--public" ||
+		arg == "--admin-remote" ||
+		arg == "--tls-hosts" ||
+		strings.HasPrefix(arg, "--listen=") ||
+		strings.HasPrefix(arg, "--tls-hosts=")
+}
+
+func splitFlagList(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }
 
 func shouldAutoStart(err error) bool {
@@ -85,7 +169,7 @@ func canAutoStart(addr string) bool {
 	if err != nil {
 		return false
 	}
-	if port != strings.TrimPrefix(Port, ":") {
+	if port != defaultMasterPort {
 		return false
 	}
 	return host == "" || host == "localhost" || host == "127.0.0.1"

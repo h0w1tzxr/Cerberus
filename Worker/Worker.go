@@ -40,21 +40,18 @@ const (
 func main() {
 	addrFlag := flag.String("addr", "", "master gRPC address")
 	tokenFlag := flag.String("token", "", "worker auth token")
+	workerIDFlag := flag.String("worker-id", "", "worker id")
 	tlsCAFlag := flag.String("tls-ca", "", "path to TLS CA certificate")
 	tlsServerNameFlag := flag.String("tls-server-name", "", "TLS server name override")
 	flag.Parse()
 
-	cfg, err := resolveWorkerConfig(*addrFlag, *tokenFlag, *tlsCAFlag, *tlsServerNameFlag)
+	cfg, err := resolveWorkerConfig(*addrFlag, *tokenFlag, *workerIDFlag, *tlsCAFlag, *tlsServerNameFlag)
 	if err != nil {
 		logError("Config error: %v", err)
 		return
 	}
 
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		hostname = fmt.Sprintf("%d", time.Now().Unix())
-	}
-	workerID := "worker-" + hostname // Atau gunakan UUID random
+	workerID := cfg.workerID
 
 	cpuCores := int32(runtime.NumCPU())
 	runtime.GOMAXPROCS(int(cpuCores))
@@ -114,11 +111,12 @@ func main() {
 type workerConfig struct {
 	addr          string
 	token         string
+	workerID      string
 	tlsCA         string
 	tlsServerName string
 }
 
-func resolveWorkerConfig(addr, token, tlsCA, tlsServerName string) (workerConfig, error) {
+func resolveWorkerConfig(addr, token, workerID, tlsCA, tlsServerName string) (workerConfig, error) {
 	if addr == "" {
 		addr = strings.TrimSpace(os.Getenv(security.EnvMasterAddr))
 	}
@@ -136,8 +134,27 @@ func resolveWorkerConfig(addr, token, tlsCA, tlsServerName string) (workerConfig
 	if tlsServerName == "" {
 		tlsServerName = strings.TrimSpace(os.Getenv(security.EnvTLSServerName))
 	}
+	if workerID == "" {
+		workerID = strings.TrimSpace(os.Getenv(security.EnvWorkerID))
+	}
+	if workerID == "" {
+		hostname, err := os.Hostname()
+		if err != nil || strings.TrimSpace(hostname) == "" {
+			hostname = fmt.Sprintf("%d", time.Now().Unix())
+		}
+		workerID = "worker-" + strings.TrimSpace(hostname)
+	}
+	workerID, err := security.ValidateWorkerID(workerID)
+	if err != nil {
+		return workerConfig{}, err
+	}
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv(security.EnvWorkerToken))
+		if token == "" {
+			if localToken, err := security.LoadWorkerTokenSecret(workerID); err == nil {
+				token = localToken
+			}
+		}
 		if token == "" {
 			if tokenPath, err := security.DefaultTokenPath(); err == nil {
 				if tokens, err := security.LoadTokens(tokenPath); err == nil {
@@ -147,11 +164,12 @@ func resolveWorkerConfig(addr, token, tlsCA, tlsServerName string) (workerConfig
 		}
 	}
 	if token == "" {
-		return workerConfig{}, fmt.Errorf("worker token is required; set %s or use the generated tokens file", security.EnvWorkerToken)
+		return workerConfig{}, fmt.Errorf("worker token is required; set %s or issue a worker token with the Master token command", security.EnvWorkerToken)
 	}
 	return workerConfig{
 		addr:          addr,
 		token:         token,
+		workerID:      workerID,
 		tlsCA:         tlsCA,
 		tlsServerName: tlsServerName,
 	}, nil
@@ -279,11 +297,18 @@ func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *worker
 
 		rangeLabel := formatRange(task.StartIndex, task.EndIndex)
 		if errMsg != "" {
-			telemetry.RecordEvent(workerEventError, fmt.Sprintf("chunk %s failed: %s", rangeLabel, errMsg))
+			telemetry.RecordEvent(workerEventError, fmt.Sprintf("chunk %s failed: %s", rangeLabel, security.SanitizeLogValue(errMsg, 300)))
 		} else if found {
-			msg := fmt.Sprintf("password found for chunk %s: %s", rangeLabel, passwd)
+			msg := fmt.Sprintf("password found for chunk %s", rangeLabel)
+			if security.RevealPasswords() {
+				msg = fmt.Sprintf("%s: %s", msg, security.SanitizeLogValue(passwd, 300))
+			}
 			telemetry.RecordEvent(workerEventSuccess, msg)
-			logSuccess("Password found by %s: %s", workerID, passwd)
+			if security.RevealPasswords() {
+				logSuccess("Password found by %s: %s", workerID, security.SanitizeLogValue(passwd, 300))
+			} else {
+				logSuccess("Password found by %s", workerID)
+			}
 		}
 
 		telemetry.SetSlotState(slotID, "reporting")
@@ -336,7 +361,11 @@ func processTask(task *pb.TaskChunk, onProgress func(processed, total int64)) (b
 }
 
 func bruteForceWordlist(path string, start, end int64, targetHash string, mode pb.HashMode, onProgress func(processed, total int64)) (bool, string, string, chunkStats) {
-	index, err := wordlistCache.Get(path)
+	resolvedPath, err := security.ResolveWordlistPath(path)
+	if err != nil {
+		return false, "", err.Error(), chunkStats{}
+	}
+	index, err := wordlistCache.Get(resolvedPath)
 	if err != nil {
 		return false, "", err.Error(), chunkStats{}
 	}

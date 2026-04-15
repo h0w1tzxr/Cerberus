@@ -185,11 +185,15 @@ func snapshotWorkersLocked(state *masterState, now time.Time) []workerSnapshot {
 	snapshots := make([]workerSnapshot, 0, len(state.workers))
 	snapshotByID := make(map[string]int, len(state.workers))
 	for id, info := range state.workers {
+		health := workerHealth(now, info.LastSeen, WorkerStaleAfter)
+		if info.Quarantined {
+			health = "quarantined"
+		}
 		snapshot := workerSnapshot{
 			id:            id,
 			cpuCores:      info.CPUCores,
 			lastSeen:      info.LastSeen,
-			health:        workerHealth(now, info.LastSeen, WorkerStaleAfter),
+			health:        health,
 			avgRate:       info.AvgRate,
 			lastChunkRate: info.LastChunkRate,
 			lastTaskID:    info.LastTaskID,
