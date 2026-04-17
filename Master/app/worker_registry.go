@@ -37,5 +37,5 @@ func workerHealth(now, lastSeen time.Time, timeout time.Duration) string {
 	if now.Sub(lastSeen) <= timeout {
 		return "healthy"
 	}
-	return "stale"
+	return "offline"
 }

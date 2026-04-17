@@ -12,13 +12,16 @@ import (
 )
 
 const (
-	DefaultChunkSize    int64 = 1000
-	DefaultKeyspace     int64 = 100000
-	DefaultMaxRetries         = 3
-	WorkerStaleAfter          = 30 * time.Second
-	TargetChunkDuration       = 8 * time.Second
-	MinChunkSize        int64 = 1
-	MaxChunkFactor            = 8
+	DefaultChunkSize        int64 = 1000
+	DefaultKeyspace         int64 = 100000
+	DefaultMaxRetries             = 3
+	WorkerHeartbeatInterval       = 2 * time.Second
+	WorkerMissedHeartbeats        = 7
+	WorkerStaleAfter              = WorkerHeartbeatInterval * WorkerMissedHeartbeats
+	WorkerEvictionGrace           = 2 * WorkerStaleAfter
+	TargetChunkDuration           = 8 * time.Second
+	MinChunkSize            int64 = 1
+	MaxChunkFactor                = 8
 )
 
 type taskLease struct {
@@ -306,6 +309,22 @@ func (s *masterState) requeueLeaseLocked(chunkID string, lease taskLease, now ti
 	if task.isDispatchable() {
 		s.enqueueTaskLocked(task)
 	}
+}
+
+func (s *masterState) deleteWorkerLocked(workerID string, now time.Time) bool {
+	if workerID == "" {
+		return false
+	}
+	if _, ok := s.workers[workerID]; !ok {
+		return false
+	}
+	for chunkID, lease := range s.activeChunks {
+		if lease.workerID == workerID {
+			s.requeueLeaseLocked(chunkID, lease, now)
+		}
+	}
+	delete(s.workers, workerID)
+	return true
 }
 
 func (s *masterState) updateWorkerRateLocked(workerID string, processed int64, duration time.Duration) {

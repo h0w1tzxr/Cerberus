@@ -296,7 +296,7 @@ func healthLabel(health string) string {
 	switch health {
 	case "healthy":
 		return console.ColorSuccess(label)
-	case "stale":
+	case "offline":
 		return console.ColorWarn(label)
 	default:
 		return console.ColorError(label)
@@ -307,8 +307,8 @@ func shortHealthLabel(health string) string {
 	switch health {
 	case "healthy":
 		return "ok"
-	case "stale":
-		return "stale"
+	case "offline":
+		return "offline"
 	case "unknown":
 		return "unk"
 	default:

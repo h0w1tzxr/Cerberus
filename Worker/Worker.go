@@ -34,6 +34,8 @@ const (
 	progressLogInterval = 750 * time.Millisecond
 	progressReportEvery = int64(200)
 	getTaskTimeout      = 3 * time.Second
+	heartbeatInterval   = 2 * time.Second
+	heartbeatTimeout    = time.Second
 	renderInterval      = time.Second / 30
 )
 
@@ -95,7 +97,12 @@ func main() {
 	telemetry.SetGlobalState("connected")
 	logInfo("Connected to master: %s", cfg.addr)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	tracker := newConnectionTracker(true)
+	startWorkerHeartbeat(ctx, c, telemetry, workerID, cpuCores, tracker)
+
 	var wg sync.WaitGroup
 	wg.Add(slotCount)
 	for i := 0; i < slotCount; i++ {
@@ -344,6 +351,36 @@ func getTask(client pb.CrackerServiceClient, workerID string, cpuCores int32) (*
 	task, err := client.GetTask(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
 	cancel()
 	return task, err
+}
+
+func startWorkerHeartbeat(ctx context.Context, client pb.CrackerServiceClient, telemetry *workerTelemetry, workerID string, cpuCores int32, tracker *connectionTracker) {
+	go func() {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := heartbeatWorker(client, workerID, cpuCores); err != nil {
+					if tracker != nil {
+						tracker.MarkDisconnected(telemetry, err)
+					}
+					continue
+				}
+				if tracker != nil {
+					tracker.MarkConnected(telemetry)
+				}
+			}
+		}
+	}()
+}
+
+func heartbeatWorker(client pb.CrackerServiceClient, workerID string, cpuCores int32) error {
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+	defer cancel()
+	_, err := client.Heartbeat(ctx, &pb.WorkerInfo{WorkerId: workerID, CpuCores: cpuCores})
+	return err
 }
 
 type chunkStats struct {

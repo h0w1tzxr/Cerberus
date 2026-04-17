@@ -46,6 +46,28 @@ func (s *server) RegisterWorker(ctx context.Context, in *pb.WorkerInfo) (*pb.Ack
 	return &pb.Ack{Received: true}, nil
 }
 
+func (s *server) Heartbeat(ctx context.Context, in *pb.WorkerInfo) (*pb.Ack, error) {
+	workerID, cpuCores, err := validateWorkerInfo(in)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if boundWorker := workerIDFromContext(ctx); boundWorker != "" && boundWorker != workerID {
+		return nil, status.Error(codes.PermissionDenied, "worker token is not valid for worker id")
+	}
+	s.state.mu.Lock()
+	if _, registered := s.state.workers[workerID]; !registered {
+		s.state.mu.Unlock()
+		return nil, status.Error(codes.NotFound, "worker not registered")
+	}
+	s.state.updateWorkerLocked(workerID, cpuCores, time.Now())
+	quarantined := s.state.isWorkerQuarantinedLocked(workerID)
+	s.state.mu.Unlock()
+	if quarantined {
+		return nil, status.Error(codes.PermissionDenied, "worker is quarantined")
+	}
+	return &pb.Ack{Received: true}, nil
+}
+
 func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk, error) {
 	workerID, cpuCores, err := validateWorkerInfo(in)
 	if err != nil {
@@ -58,6 +80,10 @@ func (s *server) GetTask(ctx context.Context, in *pb.WorkerInfo) (*pb.TaskChunk,
 	for {
 		s.state.mu.Lock()
 		now := time.Now()
+		if _, registered := s.state.workers[workerID]; !registered {
+			s.state.mu.Unlock()
+			return nil, status.Error(codes.NotFound, "worker not registered")
+		}
 		s.state.updateWorkerLocked(workerID, cpuCores, now)
 		if s.state.isWorkerQuarantinedLocked(workerID) {
 			s.state.mu.Unlock()
@@ -363,12 +389,24 @@ func runServer(interactive bool, cfg serverConfig) error {
 	}
 
 	state := newMasterState()
-	renderer := console.NewStickyRenderer(os.Stdout)
-	log.SetOutput(renderer)
 	ui := newMasterUI(state)
-	renderLoop := console.NewRenderLoop(renderer, masterRenderInterval, ui.StatusLine)
-	renderLoop.Start()
-	defer renderLoop.Stop()
+	useTUI := shouldUseFullscreenTUI(interactive, cfg)
+	var (
+		renderer   *console.StickyRenderer
+		renderLoop *console.RenderLoop
+		tuiLogs    *tuiLogStore
+	)
+	if useTUI {
+		tuiLogs = newTUILogStore(defaultTUILogLimit)
+		log.SetOutput(tuiLogs)
+		defer restoreTerminalLogger()
+	} else {
+		renderer = console.NewStickyRenderer(os.Stdout)
+		log.SetOutput(renderer)
+		renderLoop = console.NewRenderLoop(renderer, masterRenderInterval, ui.StatusLine)
+		renderLoop.Start()
+		defer renderLoop.Stop()
+	}
 
 	if securityState.generatedCert {
 		logWarn("Generated TLS cert at %s (set %s/%s to override)", securityState.certPath, security.EnvTLSCert, security.EnvTLSKey)
@@ -413,13 +451,41 @@ func runServer(interactive bool, cfg serverConfig) error {
 	logInfo("Master Hash Cracker listening on %s", cfg.listenAddr)
 	logInfo("Ready for Workers...")
 
-	startShutdownWatcher(s, state, ui)
+	ctx, cancelBackground := context.WithCancel(context.Background())
+	defer cancelBackground()
+	startShutdownWatcher(ctx, s, state, ui)
+	startWorkerEvictionLoop(ctx, state, ui)
 
-	if interactive {
+	if interactive && !useTUI {
 		startInteractiveConsole(s, renderLoop, renderer, ui, state)
 	}
 
-	if err := s.Serve(lis); err != nil {
+	if useTUI {
+		serverErr := make(chan error, 1)
+		tuiServerErr := make(chan error, 1)
+		go func() {
+			err := serveGRPC(s, lis)
+			tuiServerErr <- err
+			serverErr <- err
+		}()
+		if err := runMasterTUI(state, ui, tuiLogs, cfg, tuiServerErr); err != nil {
+			s.GracefulStop()
+			<-serverErr
+			return err
+		}
+		s.GracefulStop()
+		return <-serverErr
+	}
+
+	return serveGRPC(s, lis)
+}
+
+func restoreTerminalLogger() {
+	log.SetOutput(os.Stderr)
+}
+
+func serveGRPC(server *grpc.Server, lis net.Listener) error {
+	if err := server.Serve(lis); err != nil {
 		if err == grpc.ErrServerStopped {
 			return nil
 		}
@@ -428,14 +494,51 @@ func runServer(interactive bool, cfg serverConfig) error {
 	return nil
 }
 
-func startShutdownWatcher(server *grpc.Server, state *masterState, ui *masterUI) {
+func startWorkerEvictionLoop(ctx context.Context, state *masterState, ui *masterUI) {
+	go func() {
+		ticker := time.NewTicker(WorkerEvictionGrace / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			now := time.Now()
+			state.mu.Lock()
+			var toEvict []string
+			for id, w := range state.workers {
+				if now.Sub(w.LastSeen) > WorkerEvictionGrace {
+					toEvict = append(toEvict, id)
+				}
+			}
+			for _, id := range toEvict {
+				state.deleteWorkerLocked(id, now)
+			}
+			state.mu.Unlock()
+			for _, id := range toEvict {
+				logWarn("Auto-evicted offline worker %s", id)
+				if ui != nil {
+					ui.SetEvent(uiEventWarn, fmt.Sprintf("Auto-evicted offline worker %s", id))
+				}
+			}
+		}
+	}()
+}
+
+func startShutdownWatcher(ctx context.Context, server *grpc.Server, state *masterState, ui *masterUI) {
 	if server == nil || state == nil {
 		return
 	}
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			state.mu.Lock()
 			requested := state.shutdownRequested
 			active := len(state.activeChunks)

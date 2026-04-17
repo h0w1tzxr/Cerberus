@@ -141,6 +141,80 @@ func TestWorkerInfoValidation(t *testing.T) {
 	}
 }
 
+func TestWorkerHeartbeatUpdatesLastSeen(t *testing.T) {
+	srv := &server{state: newMasterState()}
+	srv.state.mu.Lock()
+	srv.state.updateWorkerLocked("worker-a", 4, time.Now().Add(-time.Second))
+	srv.state.mu.Unlock()
+
+	_, err := srv.Heartbeat(context.Background(), &pb.WorkerInfo{WorkerId: "worker-a", CpuCores: 4})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	srv.state.mu.Lock()
+	info := srv.state.workers["worker-a"]
+	srv.state.mu.Unlock()
+	if info == nil {
+		t.Fatal("heartbeat did not update worker")
+	}
+	if info.CPUCores != 4 {
+		t.Fatalf("heartbeat cores = %d, want 4", info.CPUCores)
+	}
+	if info.LastSeen.IsZero() {
+		t.Fatal("heartbeat did not update last seen")
+	}
+}
+
+func TestHeartbeatRejectsUnregisteredWorker(t *testing.T) {
+	srv := &server{state: newMasterState()}
+	_, err := srv.Heartbeat(context.Background(), &pb.WorkerInfo{WorkerId: "worker-ghost", CpuCores: 4})
+	if err == nil {
+		t.Fatal("expected error for unregistered worker, got nil")
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", status.Code(err))
+	}
+}
+
+func TestWorkerHealthOfflineAfterMissedHeartbeats(t *testing.T) {
+	now := time.Now()
+	if got := workerHealth(now, now.Add(-WorkerStaleAfter+time.Second), WorkerStaleAfter); got != "healthy" {
+		t.Fatalf("fresh worker health = %q, want healthy", got)
+	}
+	if got := workerHealth(now, now.Add(-WorkerStaleAfter-time.Second), WorkerStaleAfter); got != "offline" {
+		t.Fatalf("expired worker health = %q, want offline", got)
+	}
+}
+
+func TestDeleteWorkerRequeuesActiveLeases(t *testing.T) {
+	state := newMasterState()
+	task := state.addTask(strings.Repeat("a", 32), HashModeMD5, "", "", "", "", 0, 0, 10, 100, 0, 3)
+	now := time.Now()
+
+	state.mu.Lock()
+	chunk := state.assignChunkLocked(task, 0, 10, "worker-a", now)
+	state.updateWorkerLocked("worker-a", 4, now)
+	deleted := state.deleteWorkerLocked("worker-a", now.Add(time.Second))
+	_, workerExists := state.workers["worker-a"]
+	_, leaseExists := state.activeChunks[chunk.TaskId]
+	pending := len(task.PendingRanges)
+	state.mu.Unlock()
+
+	if !deleted {
+		t.Fatal("deleteWorkerLocked returned false")
+	}
+	if workerExists {
+		t.Fatal("worker still exists after delete")
+	}
+	if leaseExists {
+		t.Fatal("worker lease still exists after delete")
+	}
+	if pending != 1 {
+		t.Fatalf("pending ranges = %d, want 1", pending)
+	}
+}
+
 func testServerWithLease(t *testing.T, workerID string) (*server, *pb.TaskChunk) {
 	t.Helper()
 	return testServerWithHashLease(t, workerID, strings.Repeat("a", 32))

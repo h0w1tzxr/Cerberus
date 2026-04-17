@@ -109,6 +109,7 @@ func roleForMethod(fullMethod string) (string, error) {
 		"/cracker.CrackerAdmin/ListWorkers":
 		return "admin", nil
 	case "/cracker.CrackerService/RegisterWorker",
+		"/cracker.CrackerService/Heartbeat",
 		"/cracker.CrackerService/GetTask",
 		"/cracker.CrackerService/ReportProgress",
 		"/cracker.CrackerService/ReportResult":
