@@ -156,6 +156,14 @@ func DefaultWorkerTokenStorePath() (string, error) {
 	return filepath.Join(dir, "worker_tokens.json"), nil
 }
 
+func DefaultEvictedWorkersPath() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "evicted_workers.txt"), nil
+}
+
 func DefaultWorkerTokenSecretPath(workerID string) (string, error) {
 	dir, err := ConfigDir()
 	if err != nil {

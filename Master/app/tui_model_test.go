@@ -457,8 +457,15 @@ func TestTUIDeleteSelectedWorker(t *testing.T) {
 	if exists {
 		t.Fatal("worker still exists after TUI delete")
 	}
-	if updated.status.message == "" || !strings.Contains(updated.status.message, "Deleted worker worker-laptop-1") {
-		t.Fatalf("delete status missing: %q", updated.status.message)
+	if updated.status.message == "" || !strings.Contains(updated.status.message, "Evicted worker worker-laptop-1") {
+		t.Fatalf("evict status missing: %q", updated.status.message)
+	}
+
+	state.mu.Lock()
+	isEvicted := state.isEvictedLocked("worker-laptop-1")
+	state.mu.Unlock()
+	if !isEvicted {
+		t.Fatal("worker-laptop-1 missing from evicted set after TUI delete")
 	}
 }
 

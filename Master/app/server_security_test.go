@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,78 @@ func TestHeartbeatRejectsUnregisteredWorker(t *testing.T) {
 	}
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", status.Code(err))
+	}
+}
+
+func TestOperatorEvictRejectsReregistration(t *testing.T) {
+	srv := &server{state: newMasterState()}
+	ctx := context.Background()
+	info := &pb.WorkerInfo{WorkerId: "worker-evict", CpuCores: 4}
+
+	if _, err := srv.RegisterWorker(ctx, info); err != nil {
+		t.Fatalf("initial RegisterWorker: %v", err)
+	}
+
+	srv.state.mu.Lock()
+	evicted := srv.state.operatorEvictWorkerLocked("worker-evict", time.Now())
+	srv.state.mu.Unlock()
+	if !evicted {
+		t.Fatal("operatorEvictWorkerLocked returned false")
+	}
+
+	_, err := srv.RegisterWorker(ctx, info)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for evicted worker, got %v", err)
+	}
+
+	srv.state.mu.Lock()
+	admitted := srv.state.admitWorkerLocked("worker-evict")
+	srv.state.mu.Unlock()
+	if !admitted {
+		t.Fatal("admitWorkerLocked returned false for evicted worker")
+	}
+
+	if _, err := srv.RegisterWorker(ctx, info); err != nil {
+		t.Fatalf("RegisterWorker after admit: %v", err)
+	}
+}
+
+func TestEvictedWorkersFilePersistsAcrossStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evicted_workers.txt")
+
+	first := newMasterState()
+	if err := first.ConfigureEvictionStore(path); err != nil {
+		t.Fatalf("ConfigureEvictionStore: %v", err)
+	}
+	first.mu.Lock()
+	first.operatorEvictWorkerLocked("worker-a", time.Now())
+	first.operatorEvictWorkerLocked("worker-b", time.Now())
+	first.mu.Unlock()
+
+	second := newMasterState()
+	if err := second.ConfigureEvictionStore(path); err != nil {
+		t.Fatalf("second ConfigureEvictionStore: %v", err)
+	}
+	second.mu.Lock()
+	ids := second.evictedWorkersLocked()
+	second.mu.Unlock()
+	if len(ids) != 2 || ids[0] != "worker-a" || ids[1] != "worker-b" {
+		t.Fatalf("loaded evicted ids = %v, want [worker-a worker-b]", ids)
+	}
+
+	second.mu.Lock()
+	second.admitWorkerLocked("worker-a")
+	second.mu.Unlock()
+
+	third := newMasterState()
+	if err := third.ConfigureEvictionStore(path); err != nil {
+		t.Fatalf("third ConfigureEvictionStore: %v", err)
+	}
+	third.mu.Lock()
+	ids = third.evictedWorkersLocked()
+	third.mu.Unlock()
+	if len(ids) != 1 || ids[0] != "worker-b" {
+		t.Fatalf("after admit loaded ids = %v, want [worker-b]", ids)
 	}
 }
 

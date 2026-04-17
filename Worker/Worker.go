@@ -39,6 +39,7 @@ const (
 	heartbeatInterval   = 2 * time.Second
 	heartbeatTimeout    = time.Second
 	renderInterval      = time.Second / 30
+	evictedPollDelay    = 30 * time.Second
 )
 
 func main() {
@@ -259,6 +260,17 @@ func isEvictedError(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
 
+// isOperatorEvictedError reports whether the master rejected the worker
+// because it was explicitly evicted by the operator. The worker should back
+// off and wait for a human admit rather than spamming the master.
+func isOperatorEvictedError(err error) bool {
+	if status.Code(err) != codes.PermissionDenied {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "evicted")
+}
+
 func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *workerTelemetry, workerID string, cpuCores int32, tracker *connectionTracker) {
 	idleDelay := standbyDelay
 	errorDelay := standbyDelay
@@ -287,6 +299,16 @@ func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *worker
 				} else {
 					err = rerr
 				}
+			}
+			if isOperatorEvictedError(err) {
+				logWarn("Worker %s rejected by master (evicted). Waiting for operator admit.", workerID)
+				if telemetry != nil {
+					telemetry.SetGlobalState("evicted")
+					telemetry.RecordEvent(workerEventWarn, fmt.Sprintf("rejected by master: %v", err))
+				}
+				telemetry.SetSlotState(slotID, "evicted")
+				time.Sleep(evictedPollDelay)
+				continue
 			}
 			if tracker != nil {
 				tracker.MarkDisconnected(telemetry, err)
@@ -408,6 +430,12 @@ func startWorkerHeartbeat(ctx context.Context, client pb.CrackerServiceClient, t
 						} else {
 							err = rerr
 						}
+					}
+					if isOperatorEvictedError(err) {
+						if telemetry != nil {
+							telemetry.SetGlobalState("evicted")
+						}
+						continue
 					}
 					if tracker != nil {
 						tracker.MarkDisconnected(telemetry, err)

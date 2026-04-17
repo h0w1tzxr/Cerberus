@@ -1,9 +1,13 @@
 package master
 
 import (
+	"bufio"
 	"container/heap"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +53,8 @@ type masterState struct {
 	activeChunks      map[string]taskLease
 	chunkProgress     map[string]int64
 	workers           map[string]*workerInfo
+	evictedWorkers    map[string]struct{}
+	evictedPath       string
 	dispatchPaused    bool
 	shutdownRequested bool
 	nextTaskSeq       int64
@@ -62,16 +68,144 @@ type masterState struct {
 
 func newMasterState() *masterState {
 	state := &masterState{
-		tasks:         make(map[string]*Task),
-		queue:         make(taskQueue, 0),
-		activeChunks:  make(map[string]taskLease),
-		chunkProgress: make(map[string]int64),
-		workers:       make(map[string]*workerInfo),
-		wordlists:     wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes),
-		batchOutputs:  make(map[string]*batchOutput),
+		tasks:          make(map[string]*Task),
+		queue:          make(taskQueue, 0),
+		activeChunks:   make(map[string]taskLease),
+		chunkProgress:  make(map[string]int64),
+		workers:        make(map[string]*workerInfo),
+		evictedWorkers: make(map[string]struct{}),
+		wordlists:      wordlist.NewCache(wordlist.DefaultIndexStride, wordlist.DefaultMaxLineBytes),
+		batchOutputs:   make(map[string]*batchOutput),
 	}
 	heap.Init(&state.queue)
 	return state
+}
+
+// ConfigureEvictionStore points the state at a file on disk. Any worker ids
+// already in the file are loaded into the in-memory evicted set, and later
+// mutations are written back. A missing file is not an error: it just means
+// no workers have been evicted yet. Pass an empty path to keep the evicted
+// set purely in-memory (useful for tests).
+func (s *masterState) ConfigureEvictionStore(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictedPath = strings.TrimSpace(path)
+	if s.evictedPath == "" {
+		return nil
+	}
+	return s.loadEvictedLocked()
+}
+
+func (s *masterState) loadEvictedLocked() error {
+	file, err := os.Open(s.evictedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		id := strings.TrimSpace(scanner.Text())
+		if id == "" || strings.HasPrefix(id, "#") {
+			continue
+		}
+		s.evictedWorkers[id] = struct{}{}
+	}
+	return scanner.Err()
+}
+
+func (s *masterState) saveEvictedLocked() error {
+	if s.evictedPath == "" {
+		return nil
+	}
+	dir := filepath.Dir(s.evictedPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "evicted_workers.*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	ids := make([]string, 0, len(s.evictedWorkers))
+	for id := range s.evictedWorkers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	writer := bufio.NewWriter(tmp)
+	for _, id := range ids {
+		if _, err := fmt.Fprintln(writer, id); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.evictedPath)
+}
+
+func (s *masterState) isEvictedLocked(workerID string) bool {
+	if workerID == "" {
+		return false
+	}
+	_, ok := s.evictedWorkers[workerID]
+	return ok
+}
+
+// operatorEvictWorkerLocked deletes the worker and records it on the evicted
+// list so RegisterWorker rejects the id until it is explicitly admitted.
+// Use this for operator-initiated removal. For transient auto-eviction, call
+// deleteWorkerLocked directly so the worker can rejoin when it reappears.
+func (s *masterState) operatorEvictWorkerLocked(workerID string, now time.Time) bool {
+	if workerID == "" {
+		return false
+	}
+	deleted := s.deleteWorkerLocked(workerID, now)
+	s.evictedWorkers[workerID] = struct{}{}
+	if err := s.saveEvictedLocked(); err != nil {
+		logWarn("Failed to persist evicted-workers file: %v", err)
+	}
+	return deleted
+}
+
+// admitWorkerLocked removes a worker id from the evicted list. The id is
+// eligible to register again after this call.
+func (s *masterState) admitWorkerLocked(workerID string) bool {
+	if workerID == "" {
+		return false
+	}
+	if _, ok := s.evictedWorkers[workerID]; !ok {
+		return false
+	}
+	delete(s.evictedWorkers, workerID)
+	if err := s.saveEvictedLocked(); err != nil {
+		logWarn("Failed to persist evicted-workers file: %v", err)
+	}
+	return true
+}
+
+// evictedWorkersLocked returns a sorted copy of the current evicted set.
+func (s *masterState) evictedWorkersLocked() []string {
+	if len(s.evictedWorkers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(s.evictedWorkers))
+	for id := range s.evictedWorkers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (s *masterState) addTask(hash string, mode HashMode, wordlistPath, masterWordlistPath, outputPath, batchID string, batchIndex, batchTotal int, chunkSize, totalKeyspace int64, priority, maxRetries int) *Task {

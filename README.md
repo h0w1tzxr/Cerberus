@@ -183,6 +183,8 @@ Every CLI command is also available inside the TUI by pressing `:`.
 | `task pause \| resume \| retry \| cancel <id>`    | Task lifecycle actions                    |
 | `task set-priority --priority N <id>`             | Bump task priority                        |
 | `worker list`                                     | List registered Workers                   |
+| `worker admit --worker-id ID` (TUI drawer)        | Re-admit a previously evicted Worker      |
+| `worker evicted` (TUI drawer)                     | List operator-evicted Worker ids          |
 | `dispatch pause \| resume`                        | Gate dispatch globally                    |
 
 Short aliases: `-t` task, `-w` worker, `-d` dispatch. Passing `-h` prints help
@@ -283,6 +285,17 @@ transport and authorization properties are:
 Operational guidance: rotate tokens periodically, keep `server.crt` and
 `server.key` owner-only, and do not publish the gRPC port to the public
 internet without another layer (WireGuard, Tailscale, an SSH tunnel).
+
+### Evicting a Worker
+
+`worker delete` in the TUI is authoritative. It removes the Worker from the
+Master's active set and also writes the id to `evicted_workers.txt` in the
+config directory. Any future registration attempt from that id is refused
+with `PermissionDenied`, so a running Worker process cannot silently rejoin.
+Run `worker admit --worker-id <id>` from the TUI drawer to clear the record
+and let the Worker register again. `worker evicted` lists everyone currently
+on the evicted list. Auto-eviction after missed heartbeats does not add the
+Worker to this list; the Worker rejoins as soon as it reappears.
 
 ---
 

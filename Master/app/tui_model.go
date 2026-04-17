@@ -227,9 +227,9 @@ func (m masterTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampCursors()
 		if msg.deleted {
 			if m.ui != nil {
-				m.ui.SetEvent(uiEventWarn, fmt.Sprintf("Deleted worker %s", msg.workerID))
+				m.ui.SetEvent(uiEventWarn, fmt.Sprintf("Evicted worker %s", msg.workerID))
 			}
-			m.setCommandStatus("Deleted worker "+msg.workerID, uiEventWarn)
+			m.setCommandStatus("Evicted worker "+msg.workerID+". Run `worker admit "+msg.workerID+"` to let it rejoin.", uiEventWarn)
 		} else {
 			m.setCommandStatus("Worker not found: "+msg.workerID, uiEventWarn)
 		}
@@ -492,6 +492,10 @@ func (m *masterTUIModel) prepareCommand(line string) tea.Cmd {
 		m.setCommandStatus("stdin-driven commands are not supported inside the TUI. Run them from another terminal.", uiEventWarn)
 		return nil
 	}
+	if cmd, handled := m.handleInProcessCommand(args); handled {
+		m.closeCommandMode()
+		return cmd
+	}
 	if dangerous, message := dangerousTUICommand(args); dangerous {
 		commandArgs := append([]string(nil), args...)
 		m.closeCommandMode()
@@ -510,6 +514,71 @@ func (m *masterTUIModel) closeCommandMode() {
 	m.commandMode = false
 	m.command.Blur()
 	m.command.Reset()
+}
+
+// handleInProcessCommand services worker admit/evicted from the TUI drawer
+// directly against the in-process masterState, skipping the gRPC round-trip.
+// Returns (cmd, true) when the command was handled here.
+func (m *masterTUIModel) handleInProcessCommand(args []string) (tea.Cmd, bool) {
+	if len(args) < 2 || args[0] != "worker" {
+		return nil, false
+	}
+	switch args[1] {
+	case "admit":
+		workerID := ""
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--worker-id" && i+1 < len(args) {
+				workerID = args[i+1]
+				i++
+				continue
+			}
+			if after, ok := strings.CutPrefix(args[i], "--worker-id="); ok {
+				workerID = after
+				continue
+			}
+			if !strings.HasPrefix(args[i], "-") && workerID == "" {
+				workerID = args[i]
+			}
+		}
+		workerID = strings.TrimSpace(workerID)
+		if workerID == "" {
+			m.setCommandStatus("worker admit requires --worker-id <id>", uiEventWarn)
+			return nil, true
+		}
+		state := m.state
+		if state == nil {
+			m.setCommandStatus("No Master state available", uiEventError)
+			return nil, true
+		}
+		state.mu.Lock()
+		admitted := state.admitWorkerLocked(workerID)
+		state.mu.Unlock()
+		if admitted {
+			if m.ui != nil {
+				m.ui.SetEvent(uiEventSuccess, fmt.Sprintf("Admitted worker %s", workerID))
+			}
+			m.setCommandStatus(fmt.Sprintf("Admitted worker %s. It can register again.", workerID), uiEventSuccess)
+		} else {
+			m.setCommandStatus(fmt.Sprintf("Worker %s is not on the evicted list", workerID), uiEventWarn)
+		}
+		return nil, true
+	case "evicted":
+		state := m.state
+		if state == nil {
+			m.setCommandStatus("No Master state available", uiEventError)
+			return nil, true
+		}
+		state.mu.Lock()
+		ids := state.evictedWorkersLocked()
+		state.mu.Unlock()
+		if len(ids) == 0 {
+			m.setCommandStatus("No evicted workers.", uiEventInfo)
+			return nil, true
+		}
+		m.appendCommandOutput("worker evicted", "Evicted workers ("+strconv.Itoa(len(ids))+"):\n"+strings.Join(ids, "\n"))
+		return nil, true
+	}
+	return nil, false
 }
 
 func runTUICommand(line string, args []string, cfg serverConfig) tea.Cmd {
@@ -798,14 +867,14 @@ func (m *masterTUIModel) confirmDeleteWorker() {
 	}
 	m.commandOpen = false
 	m.confirm = &tuiConfirmation{
-		message: fmt.Sprintf("Delete worker %s and requeue its active work? y/n", workerID),
+		message: fmt.Sprintf("Evict worker %s? It will not rejoin until you admit it. y/n", workerID),
 		action: func() tea.Cmd {
 			state := m.state
 			return func() tea.Msg {
 				deleted := false
 				if state != nil {
 					state.mu.Lock()
-					deleted = state.deleteWorkerLocked(workerID, time.Now())
+					deleted = state.operatorEvictWorkerLocked(workerID, time.Now())
 					state.mu.Unlock()
 				}
 				return tuiWorkerDeletedMsg{workerID: workerID, deleted: deleted}

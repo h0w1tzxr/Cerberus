@@ -41,6 +41,10 @@ func (s *server) RegisterWorker(ctx context.Context, in *pb.WorkerInfo) (*pb.Ack
 		return nil, status.Error(codes.PermissionDenied, "worker token is not valid for worker id")
 	}
 	s.state.mu.Lock()
+	if s.state.isEvictedLocked(workerID) {
+		s.state.mu.Unlock()
+		return nil, status.Error(codes.PermissionDenied, "worker is evicted; admit it from the Master to re-enroll")
+	}
 	s.state.updateWorkerLocked(workerID, cpuCores, time.Now())
 	s.state.mu.Unlock()
 	return &pb.Ack{Received: true}, nil
@@ -389,6 +393,13 @@ func runServer(interactive bool, cfg serverConfig) error {
 	}
 
 	state := newMasterState()
+	if path, err := security.DefaultEvictedWorkersPath(); err == nil {
+		if err := state.ConfigureEvictionStore(path); err != nil {
+			logWarn("Failed to load evicted-workers file %s: %v", path, err)
+		}
+	} else {
+		logWarn("Failed to resolve evicted-workers path: %v", err)
+	}
 	ui := newMasterUI(state)
 	useTUI := shouldUseFullscreenTUI(interactive, cfg)
 	var (
