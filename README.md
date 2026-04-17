@@ -1,656 +1,328 @@
 <!--
   Cerberus README
-  Repo : https://github.com/h0w1tzxr/Cerberus
-  Lisensi: GNU GPLv3
+  Repo:    https://github.com/h0w1tzxr/Cerberus
+  License: GNU GPLv3
 -->
 
 <div align="center">
 
-<!-- Animated header -->
-<a href="https://github.com/h0w1tzxr/Cerberus">
-  <img src="https://readme-typing-svg.herokuapp.com?font=JetBrains+Mono&size=26&duration=2500&pause=500&color=36BCF7FF&center=true&vCenter=true&width=900&lines=Cerberus+%E2%80%94+Hash+Cracker+(Demo+gRPC+Terdistribusi);Master%E2%80%93Worker+%7C+CLI-first+%7C+Inline+Status+Rendering;md5+%26+sha256+%7C+Wordlist+Streaming+%7C+Monitoring+Worker" alt="Cerberus header" />
-</a>
+```
+   ____           _
+  / ___|___ _ __| |__   ___ _ __ _   _ ___
+ | |   / _ \ '__| '_ \ / _ \ '__| | | / __|
+ | |__|  __/ |  | |_) |  __/ |  | |_| \__ \
+  \____\___|_|  |_.__/ \___|_|   \__,_|___/
+```
 
-<br/>
+**A Go-based command-and-control system for distributed hash cracking.**
+*One Master schedules work. A fleet of Workers cracks chunks in parallel.*
 
-<!-- Badges -->
-<p>
-  <a href="https://github.com/h0w1tzxr/Cerberus/blob/main/LICENSE">
-    <img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-blue.svg" />
-  </a>
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white" />
-  <img alt="gRPC" src="https://img.shields.io/badge/gRPC-enabled-2EA9FF?logo=grpc&logoColor=white" />
-  <img alt="CLI" src="https://img.shields.io/badge/UX-CLI--first-222222" />
-  <a href="https://github.com/h0w1tzxr/Cerberus/issues">
-    <img alt="Issues" src="https://img.shields.io/github/issues/h0w1tzxr/Cerberus" />
-  </a>
-  <a href="https://github.com/h0w1tzxr/Cerberus/stargazers">
-    <img alt="Stars" src="https://img.shields.io/github/stars/h0w1tzxr/Cerberus" />
-  </a>
-  <a href="https://github.com/h0w1tzxr/Cerberus/network/members">
-    <img alt="Forks" src="https://img.shields.io/github/forks/h0w1tzxr/Cerberus" />
-  </a>
-  <a href="https://github.com/h0w1tzxr/Cerberus/commits/main">
-    <img alt="Last Commit" src="https://img.shields.io/github/last-commit/h0w1tzxr/Cerberus" />
-  </a>
-</p>
-
-<!-- Decorative divider -->
-<img src="https://capsule-render.vercel.app/api?type=rect&color=0:36BCF7,100:8A2BE2&height=3&section=header" width="100%" alt="divider" />
+[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
+![Status](https://img.shields.io/badge/status-active_development-orange)
+![Platform](https://img.shields.io/badge/platform-linux_%7C_macos_%7C_windows-555)
 
 </div>
 
-> **Cerberus** adalah demo hash cracking terdistribusi berbasis **gRPC** dengan arsitektur **Master–Worker**.
-> Alur kerja berfokus pada kontrol operator yang jelas: membuat task, memantau progres, dan mengatur dispatch secara manual, sementara worker terus menarik pekerjaan.
->
-> README ini ditulis dengan gaya **CLI-first** yang ramah pengguna dan menampilkan **status inline** (tanpa TUI layar penuh).
+---
+
+## ⚠️ Acceptable Use
+
+Cerberus is released for research, education, authorized penetration testing,
+and recovery of your own hashes. It is a personal engineering project and has
+not been audited against operational, legal-hold, or chain-of-custody standards.
+
+Cerberus must not be used by:
+
+- Law enforcement agencies at any level, federal, state, municipal, or international.
+- Military, intelligence, or homeland-security services, including contractors acting on their behalf.
+- Anyone conducting password recovery against systems they do not own, without explicit written authorization from the owner.
+
+This notice is a statement of intent, not a license term. GPLv3 does not permit
+additional use restrictions. If your work falls in the prohibited categories,
+please use a tool that is built and supported for your operational requirements
+(hashcat with enterprise orchestration, commercial DFIR suites, and so on).
+
+By cloning, installing, or running Cerberus you acknowledge this notice.
 
 ---
 
-## ✨ TL;DR
+## What It Is Today
 
-- ✅ **Workflow manual** yang jelas dengan lifecycle task yang tegas.
-- ✅ **Inline status rendering**: status “menempel” di bawah terminal, log tetap scroll.
-- ✅ Output Rich CLI dengan **tag ANSI semantic**.
-- ✅ Mode hash: **MD5** dan **SHA256**.
-- ✅ **Wordlist streaming + indexing** untuk file besar.
-- ✅ Monitoring **Worker Health** dan **Rate per Worker**.
+Cerberus is a distributed hash-cracking system written in Go. In its current
+form the closest analog is [Hashtopolis](https://github.com/hashtopolis/server):
+a coordinator plus authenticated worker agents, an operator UI, a task queue,
+per-worker telemetry. Cerberus is a Go-native alternative to that category,
+built around a gRPC control plane, bearer-token authentication, TLS on every
+link, and a full-screen Bubble Tea terminal UI.
 
-## 🧩 Fitur Utama (Card View)
+Today's Workers are consensual. They are started by the host operator with a
+bearer token that was issued by the Master. They authenticate over TLS, pull
+work, and report results. Nothing gets deployed silently. Nothing runs without
+the host's knowledge.
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🧭 Operator-Controlled</h3>
-      <ul>
-        <li>Task lifecycle jelas</li>
-        <li>Dispatch bisa pause/resume</li>
-        <li>Audit lewat output CLI</li>
-      </ul>
-    </td>
-    <td width="33%" valign="top">
-      <h3>⚡ Inline Status UI</h3>
-      <ul>
-        <li>Log tetap scroll normal</li>
-        <li>Status bar update ~30 Hz</li>
-        <li>Tanpa full-screen TUI</li>
-      </ul>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🧱 Skalabel & Terukur</h3>
-      <ul>
-        <li>Worker menarik pekerjaan (pull)</li>
-        <li>Telemetri per-chunk</li>
-        <li>Ringkasan per-worker</li>
-      </ul>
-    </td>
-  </tr>
-</table>
+Architecturally this is the same command-and-control shape that a botnet uses.
+The difference is consent, authentication, and operator control. The shape is
+what makes Cerberus scale: throughput grows linearly as Workers join.
 
-## 🧰 Prasyarat
-
-- **Go 1.25+**
-- Port **`50051`** dapat diakses antara **Master** dan **Worker**
-- Jika memakai wordlist, letakkan file di `CERBERUS_DATA_DIR` dengan path relatif yang sama di Master dan Worker
-
-## 🔐 Security Defaults
-
-Mulai versi ini, koneksi gRPC memakai **TLS** dan butuh **token autentikasi**.
-Saat Master pertama kali dijalankan, ia akan membuat sertifikat self-signed, token admin, dan token worker lokal
-di config directory pengguna. Token admin dan token worker dipisah supaya Worker tidak bisa memakai RPC admin.
-
-Lokasi config directory (default):
-- Windows: `%APPDATA%\cerberus`
-- macOS: `~/Library/Application Support/cerberus`
-- Linux: `~/.config/cerberus`
-
-File yang dibuat:
-- `server.crt` - certificate untuk client trust
-- `server.key` - private key server, owner-only
-- `admin.token` - token CLI admin lokal, owner-only
-- `worker_tokens.json` - hash token Worker yang diizinkan, owner-only
-- `workers/<worker-id>.token` - token Worker lokal, owner-only
-
-Untuk Worker baru, issue token per Worker dari mesin Master:
-
-```bash
-go run ./Master token worker issue --worker-id worker-lab-01
-```
-
-Perintah itu menampilkan `CERBERUS_WORKER_ID` dan `CERBERUS_WORKER_TOKEN` sekali untuk dikonfigurasi di mesin Worker.
-Gunakan `go run ./Master token worker list` untuk audit status token dan
-`go run ./Master token worker revoke --worker-id worker-lab-01` untuk revoke.
-
-Jika Worker berjalan di mesin lain, salin `server.crt` ke mesin Worker dan set environment variable berikut:
-- `CERBERUS_TLS_CA=/path/to/server.crt`
-- `CERBERUS_WORKER_ID=<worker-id>`
-- `CERBERUS_WORKER_TOKEN=<token>`
-
-Untuk CLI admin:
-- `CERBERUS_TLS_CA=/path/to/server.crt`
-- `CERBERUS_ADMIN_TOKEN=<token>`
-
-Opsional override:
-- `CERBERUS_TLS_CERT` / `CERBERUS_TLS_KEY` (server)
-- `CERBERUS_TLS_SERVER_NAME` (client)
-- `CERBERUS_LISTEN_ADDR` atau `cerberus serve --listen` (default: `127.0.0.1:50051`)
-- `CERBERUS_PUBLIC=1` atau `cerberus serve --public` untuk bind non-loopback
-- `CERBERUS_ADMIN_REMOTE=1` atau `cerberus serve --admin-remote` untuk admin RPC dari luar localhost
-- `CERBERUS_TLS_HOSTS=host,ip` atau `cerberus serve --tls-hosts host,ip` untuk SAN generated certificate saat public mode
-- `CERBERUS_DATA_DIR` (default: config directory `data/`) untuk wordlist dan output
-- `CERBERUS_ALLOW_UNSAFE_PATHS=1` jika demo lokal perlu path file di luar data dir
-- `CERBERUS_REVEAL_PASSWORDS=1` untuk menampilkan password hasil crack di log/CLI
-
-Default server hanya bind ke `127.0.0.1:50051`. Untuk lab network:
-
-```bash
-go run ./Master serve --listen 0.0.0.0:50051 --public --tls-hosts "<IP_MASTER>,<DNS_MASTER>"
-```
-
-Admin RPC tetap localhost-only kecuali `--admin-remote` / `CERBERUS_ADMIN_REMOTE=1` diaktifkan.
-
-## 🗂️ Struktur Project
-
-```text
-Master/           # gRPC server + admin CLI
-Worker/           # gRPC client (worker)
-Common/wordlist/  # wordlist streaming + indexing
-Common/console/   # renderer inline + tag ANSI
-cracker/          # protobuf + generated stubs
-```
+Where hashcat maxes out a single host, Cerberus fans one cracking job out
+across every Worker you point at the Master. The scheduler tracks per-worker
+rate, quarantines misbehaving nodes, auto-evicts silent ones, and re-leases
+failed chunks to healthier peers.
 
 ---
 
-## 🚀 Quickstart
+## Features (Shipping Today)
 
-### 1) Install dependency
+- Horizontal scale-out with a gRPC Master and Worker pair. Adding a Worker adds throughput.
+- Hash modes: MD5 and SHA256. More are on the roadmap.
+- Wordlist streaming with a byte-offset index, so multi-gigabyte wordlists do not need to fit in memory.
+- Full-screen Bubble Tea operator TUI (Dashboard, Tasks, Workers, Logs, Help) with a `--plain` mode for scripts.
+- Fleet health: heartbeat tracking, auto-eviction of silent Workers, quarantine for misbehaving ones, per-chunk retries on healthier peers.
+- Task lifecycle: queued, reviewed, approved, running, completed or failed, with pause, resume, priority adjustment, and bulk batch ingest.
+- Security baseline: mandatory TLS, separate admin and worker tokens, path sandboxing on wordlists, loopback-only admin RPCs by default.
+- Live telemetry: per-worker rate, aggregate cluster throughput, ETA, found and failed counts, per-worker task history.
 
-```bash
-go mod tidy
+---
+
+## Architecture
+
+```
+                        ┌───────────────────────────┐
+                        │          Master           │
+                        │                           │
+                        │  task queue + state       │
+                        │  TUI + admin CLI          │
+                        │  TLS listener + tokens    │
+                        └──────────────┬────────────┘
+                                       │ gRPC (TLS + bearer token)
+            ┌──────────────────────────┼──────────────────────────┐
+            │                          │                          │
+       ┌────▼─────┐               ┌────▼─────┐               ┌────▼─────┐
+       │  Worker  │               │  Worker  │               │  Worker  │
+       │   pull   │               │   pull   │               │   pull   │
+       │   crack  │               │   crack  │               │   crack  │
+       │  report  │               │  report  │               │  report  │
+       └──────────┘               └──────────┘               └──────────┘
 ```
 
-### 2) Jalankan Master di Terminal 1
+The Worker protocol uses five RPCs, all Worker to Master:
+
+| RPC              | Purpose                                 |
+|------------------|-----------------------------------------|
+| `RegisterWorker` | Announce worker id and CPU cores        |
+| `Heartbeat`      | Keep the registration alive             |
+| `GetTask`        | Pull the next chunk                     |
+| `ReportProgress` | Stream chunk progress                   |
+| `ReportResult`   | Submit the chunk outcome (hit or miss)  |
+
+---
+
+## How It Compares
+
+|                         | **Cerberus (today)**                 | **hashcat**                    | **Hashtopolis**                    |
+|-------------------------|--------------------------------------|--------------------------------|------------------------------------|
+| Topology                | Distributed (Master + Workers)       | Single host                    | Distributed (server + agents)      |
+| Language                | Go                                   | C                              | PHP server, Python agent           |
+| Transport               | gRPC over TLS + bearer tokens        | (none, local)                  | HTTPS + API keys                   |
+| Operator UI             | Built-in full-screen terminal UI     | CLI only                       | Web UI                             |
+| Hash algorithms         | MD5, SHA256 (growing)                | 300+                           | Whatever hashcat supports (proxied)|
+| GPU acceleration        | CPU only (GPU is on the roadmap)     | CPU and GPU                    | CPU and GPU (via hashcat)          |
+| Positioning             | Portfolio project, active dev        | Industry-standard cracker      | Enterprise cracking ops            |
+
+Cerberus is not trying to replace hashcat. The value is the orchestration
+layer: turning a set of machines you control into one cooperating cracking
+fleet, with a single-terminal operator experience.
+
+---
+
+## Quickstart
 
 ```bash
+# Terminal 1. Start the Master. The TUI opens if you are attached to a terminal.
 go run ./Master
-```
 
-Output contoh:
+# Terminal 1 (TUI command drawer, press `:`). Issue a Worker token.
+token worker issue --worker-id worker-01
 
-```text
-[i] Master Hash Cracker listening on 127.0.0.1:50051
-[i] Ready for Workers...
-```
-
-### 3) Issue token Worker
-
-Di terminal Master:
-
-```bash
-go run ./Master token worker issue --worker-id worker-lab-01
-```
-
-### 4) Konfigurasi Worker dulu
-
-Set alamat Master, worker ID, TLS CA, dan token Worker lewat environment variable:
-
-```bash
-export CERBERUS_MASTER_ADDR="<IP_MASTER>:50051"
-export CERBERUS_WORKER_ID="worker-lab-01"
+# Terminal 2, on the Worker machine. Configure and start the Worker.
+export CERBERUS_MASTER_ADDR="<master-ip>:50051"
+export CERBERUS_WORKER_ID="worker-01"
 export CERBERUS_TLS_CA="/path/to/server.crt"
 export CERBERUS_WORKER_TOKEN="<token>"
-```
-
-Atau lewat flag:
-
-```bash
-go run ./Worker --addr "<IP_MASTER>:50051" --worker-id "worker-lab-01" --tls-ca "/path/to/server.crt" --token "<token>"
-```
-
-### 5) Jalankan Worker di device yang akan jadi Worker
-
-```bash
 go run ./Worker
+
+# Terminal 1 (TUI command drawer). Add a task.
+task add --hash 21232f297a57a5a743894a0e4a801fc3 --mode md5 --keyspace 100000 --chunk 1000
 ```
 
-### 6) Tambah task lewat prompt `cerberus>`
+Known-good MD5 hashes for a first smoke test:
 
-```bash
-task add --hash <hash> --mode md5 --keyspace 100000 --chunk 1000
 ```
-
-Contoh hash MD5 yang cocok dengan wordlist quickstart:
-
-```text
 admin        21232f297a57a5a743894a0e4a801fc3
 cerberus123  f6be3f2408481885304a362deafa168a
 password     5f4dcc3b5aa765d61d8327deb882cf99
 ```
 
-<details>
-<summary><b>✅ Tips</b> (klik untuk buka)</summary>
+---
 
-* Mulailah dengan `--keyspace` kecil dulu untuk validasi end-to-end.
-* Kamu juga bisa menjalankan CLI dari terminal lain: `go run ./Master task add ...`
+## Command Reference
 
-</details>
+Every CLI command is also available inside the TUI by pressing `:`.
+
+| Command                                           | What it does                              |
+|---------------------------------------------------|-------------------------------------------|
+| `serve [--listen ADDR] [--plain]`                 | Start the Master                          |
+| `token worker issue --worker-id ID`               | Issue a one-shot Worker token             |
+| `token worker list`                               | Audit Worker token status                 |
+| `token worker revoke --worker-id ID`              | Revoke a Worker token                     |
+| `task add --hash H --mode md5 ...`                | Add a task                                |
+| `task add-batch --file hashes.txt --mode md5 ...` | Bulk-add tasks                            |
+| `task list [--status ...] [--table]`              | List tasks                                |
+| `task show <task-id>`                             | Show one task in detail                   |
+| `task pause \| resume \| retry \| cancel <id>`    | Task lifecycle actions                    |
+| `task set-priority --priority N <id>`             | Bump task priority                        |
+| `worker list`                                     | List registered Workers                   |
+| `dispatch pause \| resume`                        | Gate dispatch globally                    |
+
+Short aliases: `-t` task, `-w` worker, `-d` dispatch. Passing `-h` prints help
+at any level (`cerberus task add -h`, and so on).
 
 ---
 
-## 🖥️ Inline Status Rendering (Tanpa TUI)
+## Operator TUI
 
-Cerberus memakai CLI linear yang nyaman untuk terminal:
+The Master TUI opens automatically when you run `cerberus serve` attached to a
+terminal. Pass `--plain` to fall back to line-based output for scripts or SSH
+sessions without a proper TTY.
 
-* Log tetap scroll normal.
-* Satu baris status menempel di bawah terminal
+Tabs: **Dashboard · Tasks · Workers · Logs · Help**
 
-### 🎨 Tag ANSI
-
-| Jenis   |          Tag         |
-| ------- | -------------------- |
-| Sukses  |          [+]         |
-| Error   |          [!]         |
-| Warning |          [*]         |
-| Info    |          [i]         |
-
----
-
-## 🧪 CLI Usage
-
-Binary **Master** akan menjadi CLI saat diberi argumen.
-Jika dijalankan tanpa argumen, Master menyalakan server + console operator di prompt `cerberus>`.
-Jika memakai alamat default lokal dan server belum berjalan, Master akan **auto-start**.
-
-### Bantuan global
-
-```bash
-go run ./Master -h
-```
-
-### Global flags
-
-* `--addr` (default `localhost:50051`) - alamat gRPC Master
-* `--operator` (default `$USER` atau `operator`) - identitas operator
-* `--token` - admin auth token
-* `--tls-ca` - path ke TLS CA certificate
-* `--tls-server-name` - override TLS server name
-
-### Commands
-
-* `serve` - jalankan Master server
-* `task` - manajemen task
-* `worker` - daftar worker
-* `token` - issue/list/revoke token Worker
-* `dispatch` - pause/resume dispatch global
-
-### Shortcut single-dash
-
-* `-t` = `task`
-* `-w` = `worker`
-* `-d` = `dispatch`
-
-### Shortcut subcommand task
-
-* `-a` add
-* `-b` add-batch
-* `-l` list
-* `-s` show
-* `-d` dispatch
-* `-c` cancel
-* `-p` pause
-* `-u` resume
-* `-r` retry
-
-### Bantuan kontekstual
-
-```bash
-go run ./Master task -h
-go run ./Master task add -h
-go run ./Master task list -h
-```
-
-### 💾 Output file (-o)
-
-* Gunakan `-o` / `--output` pada `task add` atau `task add-batch`.
-* Output disusun **satu baris per hash** sesuai urutan input batch.
-* Isi baris adalah **password hasil crack**, atau kosong jika tidak ditemukan.
-* File output ditulis dengan permission terbatas (owner-only).
+| Key          | Action                                   |
+|--------------|------------------------------------------|
+| `←` / `→`    | Switch tabs                              |
+| `↑` / `↓`    | Move the cursor                          |
+| `enter`      | Open detail view (Workers tab)           |
+| `:`          | Command drawer (run any CLI command)     |
+| `/`          | Filter (Tasks and Logs tabs)             |
+| `o`          | Cycle task sort (name, fastest, and so on) |
+| `p` / `r`    | Pause and resume dispatch                |
+| `?`          | Help tab                                 |
+| `q`          | Quit                                     |
 
 ---
 
-## 🔁 Lifecycle Task
+## Configuration
 
-Task baru otomatis **`approved`** dan **`dispatch_ready`** sehingga worker langsung bisa mengambil.
+On first run the Master creates a config directory and writes:
 
-### Status
+- `server.crt`, `server.key`: self-signed TLS certificate and key.
+- `admin.token`: admin CLI token.
+- `worker_tokens.json`: hash of every issued Worker token.
+- `workers/<id>.token`: per-Worker tokens.
 
-* `queued`
-* `reviewed`
-* `approved`
-* `running`
-* `completed`
-* `failed`
-* `canceled`
+Default locations:
 
-### Action
+- Linux: `~/.config/cerberus`
+- macOS: `~/Library/Application Support/cerberus`
+- Windows: `%APPDATA%\cerberus`
 
-* `review`: `queued -> reviewed`
-* `approve`: `reviewed -> approved`
-* `dispatch`: set task dispatch-ready
-* `pause`: stop assign chunk baru
-* `resume`: izinkan dispatch lagi
-* `cancel`: stop task, clear leases
-* `retry`: reset task gagal ke `approved`
-* `set-priority`: ubah prioritas queue
+Environment variables:
 
----
+| Variable                        | Purpose                                            |
+|---------------------------------|----------------------------------------------------|
+| `CERBERUS_MASTER_ADDR`          | Worker target address                              |
+| `CERBERUS_WORKER_ID`            | Worker identity                                    |
+| `CERBERUS_WORKER_TOKEN`         | Worker bearer token                                |
+| `CERBERUS_ADMIN_TOKEN`          | Admin CLI token                                    |
+| `CERBERUS_TLS_CA`               | Path to the Master cert (client trust anchor)     |
+| `CERBERUS_TLS_CERT` / `_KEY`    | Override Master TLS material                       |
+| `CERBERUS_TLS_SERVER_NAME`      | Override client SNI                                |
+| `CERBERUS_TLS_HOSTS`            | Comma-separated SANs for a generated cert          |
+| `CERBERUS_LISTEN_ADDR`          | Master listen address (default `127.0.0.1:50051`)  |
+| `CERBERUS_PUBLIC=1`             | Allow non-loopback binds                           |
+| `CERBERUS_ADMIN_REMOTE=1`       | Allow admin RPCs from non-loopback clients         |
+| `CERBERUS_DATA_DIR`             | Where wordlists and output files live              |
+| `CERBERUS_ALLOW_UNSAFE_PATHS=1` | Permit file paths outside `CERBERUS_DATA_DIR`      |
+| `CERBERUS_REVEAL_PASSWORDS=1`   | Show cracked passwords in logs and CLI output      |
 
-## 🧾 Contoh CLI
-
-<details>
-<summary><b>➕ Add task</b></summary>
-
-```bash
-go run ./Master task add \
-  --hash <hash> \
-  --mode md5 \
-  --keyspace 100000 \
-  --chunk 1000 \
-  -o cracked.txt \
-  --priority 5 \
-  --max-retries 3
-```
-
-</details>
-
-<details>
-<summary><b>📚 Add dengan wordlist</b></summary>
+By default the Master binds to `127.0.0.1:50051` and admin RPCs are
+localhost-only. To serve a cluster across multiple machines:
 
 ```bash
-go run ./Master task add \
-  --hash <hash> \
-  --mode sha256 \
-  --wordlist /path/to/wordlist.txt \
-  --chunk 1000
-```
-
-</details>
-
-<details>
-<summary><b>📦 Add batch</b></summary>
-
-```bash
-go run ./Master task add-batch --file hashes.txt --mode md5 --keyspace 100000 --chunk 1000 -o cracked.txt
-```
-
-</details>
-
-<details>
-<summary><b>📋 List task</b></summary>
-
-```bash
-go run ./Master task list
-go run ./Master task list --table
-go run ./Master task list --table --limit 20
-```
-
-Default `task list` menampilkan ringkasan singkat. Gunakan `--table` untuk melihat baris task detail.
-
-</details>
-
-<details>
-<summary><b>🔎 Filter status</b></summary>
-
-```bash
-go run ./Master task list --status queued,reviewed,approved,running,failed
-```
-
-</details>
-
-<details>
-<summary><b>🧠 Detail task</b></summary>
-
-```bash
-go run ./Master task show task-1
-```
-
-</details>
-
-<details>
-<summary><b>⏸️ Pause / ▶️ Resume task</b></summary>
-
-```bash
-go run ./Master task pause task-1 task-2
-go run ./Master task resume task-1
-```
-
-</details>
-
-<details>
-<summary><b>🧨 Cancel task</b></summary>
-
-```bash
-go run ./Master task cancel --reason "operator abort" task-1
-```
-
-</details>
-
-<details>
-<summary><b>🌐 Pause / Resume dispatch global</b></summary>
-
-```bash
-go run ./Master dispatch pause
-go run ./Master dispatch resume
-```
-
-</details>
-
-<details>
-<summary><b>🧑‍🏭 List worker</b></summary>
-
-```bash
-go run ./Master worker list
-```
-
-</details>
-
----
-
-## 📡 Telemetri & Reporting
-
-Worker mengirim telemetri per chunk saat selesai:
-
-* `processed` dan `total`
-* `duration_ms`
-* `avg_rate`
-
-Master mengagregasi dan menampilkan:
-
-* Status worker + chunk aktif di inline status
-* Leaderboard akhir: jumlah task per worker, rata-rata durasi task (ms), durasi task terakhir (ms), total durasi task (ms)
-* Health/stale worker tetap terlihat di status, bukan di leaderboard
-
----
-
-## 🧠 Arsitektur
-
-### Komponen
-
-* **CrackerService** (gRPC untuk Worker): `RegisterWorker`, `GetTask`, `ReportProgress`, `ReportResult`
-* **CrackerAdmin** (gRPC untuk Operator): add/list/show task, apply action, list worker, pause/resume dispatch
-
-### Alur data
-
-1. Operator menambahkan task via CLI
-2. Master memvalidasi input dan enqueue
-3. Worker menarik chunk via `GetTask`
-4. Worker memproses dan mengirim progress
-5. Worker mengirim result + telemetri
-6. Master update status task dan statistik worker
-
-### Diagram
-
-```mermaid
-flowchart LR
-  subgraph OP["👤 Operator Console (single terminal)"]
-    direction TB
-    OP1["🛠️ Buat Task"]
-    OP3["📋 Kelola Task (list/show/pause/resume/cancel)"]
-    OP4["🚦 Atur Dispatch (pause/resume)"]
-    OP2["🖥️ Lihat Status Inline"]
-  end
-
-  subgraph MS["🧠 Master (gRPC Server)"]
-    direction TB
-    MS1["📡 Menyalakan gRPC Server (default 127.0.0.1:50051)"]
-    MS2["📦 Queue Task + Bagi Chunk\n(Chunk Dispatcher)"]
-    MS3["📊 Agregasi Status & Telemetri\n(Progress + Worker Health)"]
-  end
-
-  subgraph WK["🧑‍🏭 Worker (gRPC Client)"]
-    direction TB
-    WK1["📥 Pull: GetTask"]
-    WK2["⚙️ Terima & Proses Chunk"]
-    WK3["🔓 Cracking Hash"]
-    WK4["📡 Kirim Progress / Result"]
-    WK5["🏁 Jika ketemu → kirim candidate"]
-  end
-
-  %% Operator plane
-  OP1 -->|"CrackerAdmin"| MS1
-  OP3 -->|"CrackerAdmin"| MS1
-  OP4 -->|"CrackerAdmin"| MS1
-  MS3 -->|"Status inline"| OP2
-
-  %% Worker plane
-  WK1 -->|"GetTask (pull)"| MS2
-  MS2 -->|"Chunk / NoWork"| WK2
-
-  WK2 --> WK3 --> WK4
-  WK4 -->|"ReportProgress"| MS3
-  WK4 -->|"ReportResult"| MS3
-  WK5 -->|"candidate (found)"| MS3
-
-  %% Internal master flow
-  MS1 --> MS2 --> MS3
-
-  %% Styling
-  classDef card fill:#0b1220,stroke:#36bcf7,stroke-width:1.5px,color:#e6edf3;
-  classDef soft fill:#0b1220,stroke:#8a2be2,stroke-width:1.5px,color:#e6edf3;
-
-  class OP1,OP2,OP3,OP4,WK1,WK2,WK3,WK4,WK5 card;
-  class MS1,MS2,MS3 soft;
+go run ./Master serve --listen 0.0.0.0:50051 --public --tls-hosts "<master-ip>,<master-host>"
 ```
 
 ---
 
-## ⚙️ Performa
+## Project Layout
 
-* Render UI berjalan di goroutine terpisah dan flush ~30 Hz
-* Output terminal dibuffer dengan `bufio`
-* Counter hot-path memakai atomic
-
----
-
-## 🧑‍💻 Development
-
-### Jalankan test
-
-```bash
-go test ./...
 ```
-
-### Smoke test lokal
-
-```bash
-scripts/smoke-local.sh
-```
-
-Smoke test ini memakai config/data sementara di `/tmp`, menjalankan Master dan Worker lokal di `127.0.0.1:55051`,
-mengirim 1000 task wordlist, lalu memastikan semuanya `completed` dan `found`.
-
-Override opsional:
-
-```bash
-CERBERUS_SMOKE_TASKS=1000 CERBERUS_SMOKE_TIMEOUT=60s scripts/smoke-local.sh
-```
-
-### Build binary lokal
-
-```bash
-scripts/build-release.sh
-```
-
-Output default:
-
-```text
-bin/cerberus-master
-bin/cerberus-worker
-```
-
-### Demo lab dua laptop
-
-Ikuti checklist di [`docs/lab-demo.md`](docs/lab-demo.md). Buat tag release setelah smoke test lokal dan demo dua laptop berhasil.
-
-### Regenerate protobuf
-
-```bash
-PATH="$(go env GOPATH)/bin:$PATH" \
-  protoc --go_out=. --go-grpc_out=. \
-  --go_opt=paths=source_relative \
-  --go-grpc_opt=paths=source_relative \
-  cracker/cracker.proto
+Master/           gRPC server, admin CLI, TUI
+Worker/           gRPC client
+Common/security/  TLS and token helpers
+Common/wordlist/  Streaming and byte-offset index
+Common/console/   Inline renderer and ANSI tags
+cracker/          Protobuf and generated stubs
 ```
 
 ---
 
-## 🧯 Troubleshooting
+## Security Model
 
-* **Worker tidak bisa membaca wordlist**: pastikan file ada di `CERBERUS_DATA_DIR` Worker dengan path relatif yang sama seperti di Master
-* **No work available**: pastikan task `approved` dan `dispatch_ready=true`
-* **Connection error**: cek `CERBERUS_MASTER_ADDR` atau flag `--addr` di Worker dan pastikan port `50051` terbuka. Pastikan juga Master dan Worker ada di jaringan yang sama dan tidak terblokir firewall.
-* **Bind network gagal**: untuk listen di non-loopback, jalankan `go run ./Master serve --listen 0.0.0.0:50051 --public --tls-hosts "<IP_MASTER>"`
-* **TLS/auth error**: pastikan `CERBERUS_TLS_CA` mengarah ke `server.crt`, `CERBERUS_WORKER_ID` cocok dengan token yang di-issue, dan token belum direvoke.
-* **Help output**: gunakan `-h` di level mana pun, contoh `cerberus task add -h`
+Cerberus is designed to run inside a trusted operator network: a private
+subnet, a VPN, a dedicated VLAN, or a reachable compute pool you control. The
+transport and authorization properties are:
 
-<details>
-<summary><b>🔍 Checklist</b></summary>
+- **TLS on every link.** The Master refuses plaintext gRPC. A self-signed cert is generated on first run. Operators can supply their own via `CERBERUS_TLS_CERT` and `CERBERUS_TLS_KEY`, and pin `CERBERUS_TLS_SERVER_NAME` on clients.
+- **Separated credentials.** Worker tokens and the admin token are distinct. Workers authenticate to pull chunks. The admin token gates task and fleet control. They are not interchangeable.
+- **Least-privilege admin.** Admin RPCs are loopback-only unless `--admin-remote` is explicitly passed.
+- **Path sandboxing.** Wordlist paths are resolved under `CERBERUS_DATA_DIR` unless `CERBERUS_ALLOW_UNSAFE_PATHS=1` is set, which prevents arbitrary disk reads.
+- **Sensitive-value redaction.** Cracked passwords are hidden from logs and CLI output unless `CERBERUS_REVEAL_PASSWORDS=1` is explicitly set.
 
-```text
-[ ] Master listening di 127.0.0.1:50051 untuk lokal, atau --public untuk lab network
-[ ] Worker bisa resolve IP/hostname Master
-[ ] Firewall membuka TCP 50051
-[ ] Tidak ada port forwarding yang salah
-[ ] server.crt di Worker cocok dengan Master
-[ ] Worker memakai CERBERUS_WORKER_ID dan token yang di-issue untuk ID tersebut
-```
-
-</details>
+Operational guidance: rotate tokens periodically, keep `server.crt` and
+`server.key` owner-only, and do not publish the gRPC port to the public
+internet without another layer (WireGuard, Tailscale, an SSH tunnel).
 
 ---
 
-## 🤝 Kontribusi
+## What Is Coming Next
 
-Kontribusi sangat welcome.
+The next few milestones, in priority order:
 
-1. Fork repo ini
-2. Buat branch: `feat/nama-fitur`
-3. Commit rapi dan jelas
-4. Buat Pull Request
-
-> Fokus kontribusi yang disarankan: observability (metrics/log), reliability (leases/retry), performa hash cracking, dan kualitas UX CLI.
+1. **Stabilize the current generation.** Polish the consensual-worker build so it is a genuinely reliable Hashtopolis-class tool: bug fixes, more test coverage, bcrypt and NTLM hash modes, release binaries.
+2. **Zero-touch worker onboarding.** A one-shot installer that bootstraps a Worker with just a Master address.
+3. **mTLS and CA issuance.** Replace manual bearer-token provisioning with short-lived client certificates signed by a Master CA.
+4. **Bloodhound mode.** A planned offensive-operations feature. It is the long-term differentiator. See the next section.
 
 ---
 
-## 📜 Lisensi
+## Planned: Bloodhound Mode
 
-Proyek ini dilisensikan di bawah **GNU General Public License v3.0 (GPL-3.0)**.
-Lihat berkas `LICENSE` untuk detail.
+Bloodhound is the future of Cerberus and is not shipped yet. Everything in
+this section is forward-looking design intent. Do not expect any of it to work
+today.
+
+The design intent is to make Cerberus interesting for authorized offensive
+engagements. When Bloodhound ships, deploying a Worker to a target host will
+be enough for that host to join the cracking fleet, without prior token
+issuance and without a host-operator confirmation step. Bloodhound is built
+for red-team operators who already have written authorization to run code on
+the target. The Acceptable Use notice at the top of this README still applies
+in full. Law enforcement and military use is still prohibited.
+
+Design goals for Bloodhound (in priority order):
+
+1. **Non-consensual enrollment.** A Worker that reaches the Master successfully is admitted, with or without the host operator's prior approval. This is the actual command-and-control model.
+2. **Backtracking resistance.** A compromised or recovered Worker should not cheaply expose the Master address, the operator identity, or other Workers. This implies hardened transport, hardened on-disk artifacts, and careful minimization of anything the Worker needs to remember.
+3. **Operator safety rails.** The TUI displays an unambiguous indicator when Bloodhound is active, because the risk profile while it is on is meaningfully different.
+
+Bloodhound will not ship until the current consensual-Worker generation is
+stable and polished. Until then, current Cerberus is what exists.
 
 ---
 
-<div align="center">
+## License
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:36BCF7,100:8A2BE2&height=90&section=footer" width="100%" alt="footer" />
-
-</div>
+Cerberus is distributed under the [GNU General Public License v3.0](LICENSE).
+See the Acceptable Use notice at the top of this README for usage intent.

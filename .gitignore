@@ -3,3 +3,13 @@ Worker/rockyou.txt
 
 # local build outputs
 bin/
+
+# AI tool configs
+.claude/
+.codex/
+.codex
+.agents/
+*.local.json
+
+# personal notes
+roadmap.md
