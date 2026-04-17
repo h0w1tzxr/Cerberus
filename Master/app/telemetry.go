@@ -119,7 +119,7 @@ func (ui *masterUI) StatusLine() string {
 	headerTop := fmt.Sprintf("%s master | rate=%s | tasks=%d | progress=%s", console.TagInfo(), console.FormatHashRate(totalRate), summary.totalTasks, overallPercent)
 	chunkLabel := formatChunkHeader(chunkID)
 	headerBottom := fmt.Sprintf("chunk=%s | workers=%d | active=%d | dispatch=%s", chunkLabel, workerCount, activeWorkers, dispatchLabel(dispatchPaused))
-	progressLine := ui.summaryProgressLine(summary, totalRate, dispatchPaused)
+	progressLine := ui.summaryProgressLine(summary, dispatchPaused)
 	metricsLine := ui.summaryMetricsLine(summary, totalRate)
 
 	lines := []string{headerTop, headerBottom, progressLine, metricsLine}
@@ -339,7 +339,7 @@ func colorEvent(level uiEventLevel, message string) string {
 	}
 }
 
-func (ui *masterUI) summaryProgressLine(summary workloadSummary, totalRate float64, dispatchPaused bool) string {
+func (ui *masterUI) summaryProgressLine(summary workloadSummary, dispatchPaused bool) string {
 	state := console.ProgressStateIdle
 	if summary.total > 0 {
 		if summary.completed >= summary.total {

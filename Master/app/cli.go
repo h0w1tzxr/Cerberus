@@ -168,9 +168,9 @@ func handleTaskCLI(cfg clientConfig, operator string, args []string, out io.Writ
 
 	switch args[0] {
 	case "add":
-		return taskAdd(client, operator, args[1:], out)
+		return taskAdd(client, args[1:], out)
 	case "add-batch":
-		return taskAddBatch(client, operator, args[1:], out)
+		return taskAddBatch(client, args[1:], out)
 	case "review":
 		return taskActionMany(client, operator, pb.TaskAction_TASK_ACTION_REVIEW, args[1:], out)
 	case "approve":
@@ -270,7 +270,7 @@ func handleDispatchCLI(cfg clientConfig, operator string, args []string, out io.
 	return nil
 }
 
-func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
+func taskAdd(client pb.CrackerAdminClient, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task add", flag.ContinueOnError)
 	hash := fs.String("hash", "", "target hash")
 	mode := fs.String("mode", "", "hash mode (md5|sha256)")
@@ -316,7 +316,7 @@ func taskAdd(client pb.CrackerAdminClient, operator string, args []string, out i
 	return nil
 }
 
-func taskAddBatch(client pb.CrackerAdminClient, operator string, args []string, out io.Writer) error {
+func taskAddBatch(client pb.CrackerAdminClient, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("task add-batch", flag.ContinueOnError)
 	filePath := fs.String("file", "", "path to hashes file ('-' for stdin)")
 	useStdin := fs.Bool("stdin", false, "read hashes from stdin")
