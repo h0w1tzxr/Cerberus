@@ -177,6 +177,41 @@ func TestHeartbeatRejectsUnregisteredWorker(t *testing.T) {
 	}
 }
 
+func TestWorkerReregistersAfterEviction(t *testing.T) {
+	srv := &server{state: newMasterState()}
+	ctx := context.Background()
+	info := &pb.WorkerInfo{WorkerId: "worker-rejoin", CpuCores: 4}
+
+	if _, err := srv.RegisterWorker(ctx, info); err != nil {
+		t.Fatalf("initial RegisterWorker: %v", err)
+	}
+	if _, err := srv.Heartbeat(ctx, info); err != nil {
+		t.Fatalf("first Heartbeat: %v", err)
+	}
+
+	srv.state.mu.Lock()
+	srv.state.deleteWorkerLocked("worker-rejoin", time.Now())
+	srv.state.mu.Unlock()
+
+	if _, err := srv.Heartbeat(ctx, info); status.Code(err) != codes.NotFound {
+		t.Fatalf("Heartbeat after eviction = %v, want NotFound", err)
+	}
+
+	if _, err := srv.RegisterWorker(ctx, info); err != nil {
+		t.Fatalf("re-RegisterWorker: %v", err)
+	}
+	if _, err := srv.Heartbeat(ctx, info); err != nil {
+		t.Fatalf("Heartbeat after re-register: %v", err)
+	}
+
+	srv.state.mu.Lock()
+	_, present := srv.state.workers["worker-rejoin"]
+	srv.state.mu.Unlock()
+	if !present {
+		t.Fatal("worker missing after re-registration")
+	}
+}
+
 func TestWorkerHealthOfflineAfterMissedHeartbeats(t *testing.T) {
 	now := time.Now()
 	if got := workerHealth(now, now.Add(-WorkerStaleAfter+time.Second), WorkerStaleAfter); got != "healthy" {

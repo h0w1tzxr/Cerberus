@@ -20,7 +20,9 @@ import (
 	pb "cracker/cracker"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 const defaultMasterAddress = "localhost:50051"
@@ -190,6 +192,7 @@ type prefetchResult struct {
 type connectionTracker struct {
 	mu        sync.Mutex
 	connected bool
+	reregMu   sync.Mutex
 }
 
 func newConnectionTracker(connected bool) *connectionTracker {
@@ -229,6 +232,33 @@ func (c *connectionTracker) MarkDisconnected(telemetry *workerTelemetry, err err
 	}
 }
 
+func (c *connectionTracker) Reregister(telemetry *workerTelemetry, client pb.CrackerServiceClient, workerID string, cpuCores int32) error {
+	if c == nil {
+		return nil
+	}
+	c.reregMu.Lock()
+	defer c.reregMu.Unlock()
+	c.mu.Lock()
+	alreadyConnected := c.connected
+	c.mu.Unlock()
+	if alreadyConnected {
+		return nil
+	}
+	if err := registerWorker(client, workerID, cpuCores); err != nil {
+		return err
+	}
+	c.MarkConnected(telemetry)
+	logInfo("Re-registered worker %s after master eviction.", workerID)
+	if telemetry != nil {
+		telemetry.RecordEvent(workerEventInfo, fmt.Sprintf("re-registered worker %s after eviction", workerID))
+	}
+	return nil
+}
+
+func isEvictedError(err error) bool {
+	return status.Code(err) == codes.NotFound
+}
+
 func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *workerTelemetry, workerID string, cpuCores int32, tracker *connectionTracker) {
 	idleDelay := standbyDelay
 	errorDelay := standbyDelay
@@ -249,6 +279,15 @@ func runWorkerSlot(slotID int, client pb.CrackerServiceClient, telemetry *worker
 		}
 
 		if err != nil {
+			if isEvictedError(err) && tracker != nil {
+				if rerr := tracker.Reregister(telemetry, client, workerID, cpuCores); rerr == nil {
+					telemetry.SetSlotState(slotID, "idle")
+					errorDelay = standbyDelay
+					continue
+				} else {
+					err = rerr
+				}
+			}
 			if tracker != nil {
 				tracker.MarkDisconnected(telemetry, err)
 			}
@@ -363,6 +402,13 @@ func startWorkerHeartbeat(ctx context.Context, client pb.CrackerServiceClient, t
 				return
 			case <-ticker.C:
 				if err := heartbeatWorker(client, workerID, cpuCores); err != nil {
+					if isEvictedError(err) && tracker != nil {
+						if rerr := tracker.Reregister(telemetry, client, workerID, cpuCores); rerr == nil {
+							continue
+						} else {
+							err = rerr
+						}
+					}
 					if tracker != nil {
 						tracker.MarkDisconnected(telemetry, err)
 					}
