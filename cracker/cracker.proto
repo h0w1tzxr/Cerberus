@@ -38,6 +38,9 @@ service CrackerService {
   // Worker mendaftar dan melaporkan kemampuan
   rpc RegisterWorker (WorkerInfo) returns (Ack);
 
+  // Worker heartbeat untuk status koneksi ringan
+  rpc Heartbeat (WorkerInfo) returns (Ack);
+
   // Worker meminta chunk pekerjaan baru (Work Stealing / Pull-based)
   rpc GetTask (WorkerInfo) returns (TaskChunk);
   

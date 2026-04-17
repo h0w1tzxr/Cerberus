@@ -86,6 +86,7 @@ func parseServerInvocation(args []string) (serverConfig, bool, error) {
 	publicMode := fs.Bool("public", false, "allow binding non-loopback addresses")
 	adminRemote := fs.Bool("admin-remote", false, "allow remote admin RPCs")
 	tlsHosts := fs.String("tls-hosts", "", "comma-separated generated TLS certificate hosts")
+	plainMode := fs.Bool("plain", false, "disable fullscreen TUI")
 	if err := fs.Parse(serverArgs); err != nil {
 		return serverConfig{}, true, err
 	}
@@ -108,6 +109,9 @@ func parseServerInvocation(args []string) (serverConfig, bool, error) {
 	if strings.TrimSpace(*tlsHosts) != "" {
 		cfg.tlsHosts = splitFlagList(*tlsHosts)
 	}
+	if *plainMode {
+		cfg.plainMode = true
+	}
 	if err := validateServerConfig(cfg); err != nil {
 		return serverConfig{}, true, err
 	}
@@ -119,8 +123,10 @@ func isServerFlag(arg string) bool {
 		arg == "--public" ||
 		arg == "--admin-remote" ||
 		arg == "--tls-hosts" ||
+		arg == "--plain" ||
 		strings.HasPrefix(arg, "--listen=") ||
-		strings.HasPrefix(arg, "--tls-hosts=")
+		strings.HasPrefix(arg, "--tls-hosts=") ||
+		strings.HasPrefix(arg, "--plain=")
 }
 
 func splitFlagList(value string) []string {

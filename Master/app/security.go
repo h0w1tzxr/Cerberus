@@ -26,6 +26,7 @@ type serverConfig struct {
 	publicMode       bool
 	allowRemoteAdmin bool
 	tlsHosts         []string
+	plainMode        bool
 }
 
 type serverSecurity struct {

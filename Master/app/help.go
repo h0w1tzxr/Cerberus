@@ -145,13 +145,14 @@ func renderServeHelp(out io.Writer) {
 	fmt.Fprintln(out, "Serve")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  cerberus serve [--listen ADDR] [--public] [--admin-remote] [--tls-hosts HOSTS]")
+	fmt.Fprintln(out, "  cerberus serve [--listen ADDR] [--public] [--admin-remote] [--tls-hosts HOSTS] [--plain]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags:")
 	fmt.Fprintf(out, "  --listen        listen address (default %s)\n", defaultListenAddress)
 	fmt.Fprintln(out, "  --public        allow non-loopback listen addresses")
 	fmt.Fprintln(out, "  --admin-remote  allow admin RPCs from non-loopback clients")
 	fmt.Fprintln(out, "  --tls-hosts     comma-separated SANs for generated TLS certificates")
+	fmt.Fprintln(out, "  --plain         disable fullscreen TUI even when attached to a terminal")
 }
 
 func renderTokenHelp(out io.Writer) {
