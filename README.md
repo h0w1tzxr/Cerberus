@@ -6,14 +6,6 @@
 
 <div align="center">
 
-```
-   ____           _
-  / ___|___ _ __| |__   ___ _ __ _   _ ___
- | |   / _ \ '__| '_ \ / _ \ '__| | | / __|
- | |__|  __/ |  | |_) |  __/ |  | |_| \__ \
-  \____\___|_|  |_.__/ \___|_|   \__,_|___/
-```
-
 **A Go-based command-and-control system for distributed hash cracking.**
 *One Master schedules work. A fleet of Workers cracks chunks in parallel.*
 
